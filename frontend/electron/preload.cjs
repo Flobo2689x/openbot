@@ -1,14 +1,7 @@
-// Minimal bridge: packaged file:// pages need an absolute backend origin, while
-// browser/Vite pages continue to use their relative API paths.
-// The window is sandboxed, so this preload can only require "electron"; a local
-// require of origin.cjs fails and drops the whole bridge. main.cjs resolves the
-// origin and passes it as --openbot-api-base=<origin> (see origin.cjs).
+// The window is sandboxed, so this preload can only require "electron": a require of a local
+// module fails and silently drops the whole bridge. Keep it dependency-free.
+// The packaged app is served from app://openbot with /api proxied by main (see scheme.cjs), so the
+// renderer uses the same relative API paths as the browser build and needs no backend origin here.
 const { contextBridge } = require("electron");
 
-const prefix = "--openbot-api-base=";
-const arg = process.argv.find((a) => a.startsWith(prefix));
-
-contextBridge.exposeInMainWorld("openbotDesktop", Object.freeze({
-  isElectron: true,
-  apiBase: arg ? arg.slice(prefix.length) : undefined,
-}));
+contextBridge.exposeInMainWorld("openbotDesktop", Object.freeze({ isElectron: true }));

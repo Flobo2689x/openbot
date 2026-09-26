@@ -9,9 +9,10 @@ describe("Electron security policy", () => {
     expect(csp).not.toContain("${configuredOrigin}");
   });
 
-  it("allows the packaged default API origin for file renderers", () => {
-    const csp = security.contentSecurityPolicy("null", "http://127.0.0.1:8000");
-    expect(csp).toContain("connect-src 'self' null http://127.0.0.1:8000");
+  it("names the packaged app origin, never the opaque \"null\" origin", () => {
+    const csp = security.contentSecurityPolicy(security.originOf("app://openbot/"), "http://127.0.0.1:8000");
+    expect(csp).toContain("default-src 'self' app://openbot");
+    expect(csp).not.toContain("null");
   });
 
   it("allows a remote OPENBOT_URL origin to serve API and SSE", () => {
@@ -19,16 +20,21 @@ describe("Electron security policy", () => {
     expect(csp).toContain("connect-src 'self' https://openbot.example.test");
   });
 
-  it("restricts packaged file navigation to the app document", () => {
-    const appUrl = "file:///Applications/OpenBot.app/Contents/Resources/app.asar/frontend/dist/index.html";
-    expect(security.sameOriginOrPackagedPath(`${appUrl}#/inbox?x=1`, appUrl)).toBe(true);
-    expect(security.sameOriginOrPackagedPath("file:///etc/passwd", appUrl)).toBe(false);
-    expect(security.sameOriginOrPackagedPath("file:///Applications/OpenBot.app/Contents/Resources/app.asar/frontend/dist/other.html", appUrl)).toBe(false);
+  it("treats the packaged app scheme as one real origin", () => {
+    expect(security.originOf("app://openbot/threads/1?x=1#y")).toBe("app://openbot");
+    expect(security.isSameOrigin("app://openbot/threads/1", "app://openbot/")).toBe(true);
+    expect(security.isSameOrigin("app://other/", "app://openbot/")).toBe(false);
+    expect(security.isSameOrigin("file:///etc/passwd", "app://openbot/")).toBe(false);
+  });
+
+  it("never treats opaque origins as same-origin, even with each other", () => {
+    expect(security.isSameOrigin("file:///a/index.html", "file:///a/index.html")).toBe(false);
+    expect(security.isSameOrigin("not a url", "app://openbot/")).toBe(false);
   });
 
   it("preserves origin comparison for HTTP deployments", () => {
-    expect(security.sameOriginOrPackagedPath("https://openbot.example.test/inbox", "https://openbot.example.test")).toBe(true);
-    expect(security.sameOriginOrPackagedPath("https://evil.example.test", "https://openbot.example.test")).toBe(false);
+    expect(security.isSameOrigin("https://openbot.example.test/inbox", "https://openbot.example.test")).toBe(true);
+    expect(security.isSameOrigin("https://evil.example.test", "https://openbot.example.test")).toBe(false);
   });
 
   it("approves OAuth authorization and LangSmith URLs only", () => {

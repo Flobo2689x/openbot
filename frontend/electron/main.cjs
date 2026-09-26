@@ -1,21 +1,27 @@
-const { app, BrowserWindow, session, shell, dialog } = require("electron");
+const { app, BrowserWindow, dialog, net, protocol, session, shell } = require("electron");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
-const { contentSecurityPolicy, isApprovedExternalUrl, sameOriginOrPackagedPath } = require("./security.cjs");
+const { contentSecurityPolicy, isApprovedExternalUrl, isSameOrigin, originOf } = require("./security.cjs");
 const { appIconPath } = require("./icon.cjs");
-const { apiBaseArgument, resolveApiOrigin } = require("./origin.cjs");
+const { resolveApiOrigin } = require("./origin.cjs");
+const { APP_SCHEME, APP_URL, createAppProtocolHandler, schemePrivileges } = require("./scheme.cjs");
 
 const isDevelopment = !app.isPackaged;
 const backendPort = process.env.OPENBOT_BACKEND_PORT || "8000";
-const defaultUrl = isDevelopment ? "http://localhost:5173" : `file://${path.join(__dirname, "..", "dist", "index.html")}`;
+const defaultUrl = isDevelopment ? "http://localhost:5173" : APP_URL;
 const appUrl = process.env.OPENBOT_URL || defaultUrl;
-const configuredOrigin = new URL(appUrl).origin;
+const configuredOrigin = originOf(appUrl);
 const apiOrigin = resolveApiOrigin();
 const usesExternalBackend = Boolean(process.env.OPENBOT_URL || process.env.OPENBOT_API_URL);
+// Packaged: serve dist/ and proxy /api from app://openbot (see scheme.cjs). Registration has to
+// happen before "ready", and it is harmless when the app ends up loading Vite or OPENBOT_URL.
+const servesPackagedUi = appUrl === APP_URL;
+const distDir = path.join(__dirname, "..", "dist");
+protocol.registerSchemesAsPrivileged(schemePrivileges);
 let backendProcess;
 let quitRequested = false;
 
-function sameOrigin(rawUrl) { return sameOriginOrPackagedPath(rawUrl, appUrl); }
+function sameOrigin(rawUrl) { return isSameOrigin(rawUrl, appUrl); }
 function openApprovedExternal(rawUrl) { if (isApprovedExternalUrl(rawUrl)) { void shell.openExternal(rawUrl); return true; } return false; }
 function startBackend() {
   if (isDevelopment || usesExternalBackend) return;
@@ -43,14 +49,16 @@ async function waitForBackend() {
   throw new Error(`Timed out waiting for OpenBot backend at ${healthUrl}`);
 }
 function createWindow() {
-  const window = new BrowserWindow({ width: 1440, height: 900, minWidth: 900, minHeight: 600, backgroundColor: "#111827", icon: appIconPath, webPreferences: { preload: path.join(__dirname, "preload.cjs"), additionalArguments: [`${apiBaseArgument}${apiOrigin}`], contextIsolation: true, nodeIntegration: false, sandbox: true } });
+  const window = new BrowserWindow({ width: 1440, height: 900, minWidth: 900, minHeight: 600, backgroundColor: "#111827", icon: appIconPath, webPreferences: { preload: path.join(__dirname, "preload.cjs"), contextIsolation: true, nodeIntegration: false, sandbox: true } });
   window.webContents.setWindowOpenHandler(({ url }) => { if (sameOrigin(url)) return { action: "allow" }; openApprovedExternal(url); return { action: "deny" }; });
   window.webContents.on("will-navigate", (event, url) => { if (sameOrigin(url)) return; event.preventDefault(); openApprovedExternal(url); });
   window.loadURL(appUrl);
 }
 app.whenReady().then(async () => {
   if (isDevelopment && process.platform === "darwin") app.dock?.setIcon(appIconPath);
-  session.defaultSession.webRequest.onHeadersReceived((details, callback) => callback({ responseHeaders: { ...details.responseHeaders, "Content-Security-Policy": [contentSecurityPolicy(configuredOrigin, apiOrigin)] } }));
+  const csp = contentSecurityPolicy(configuredOrigin, apiOrigin);
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => callback({ responseHeaders: { ...details.responseHeaders, "Content-Security-Policy": [csp] } }));
+  if (servesPackagedUi) protocol.handle(APP_SCHEME, createAppProtocolHandler({ apiOrigin, distDir, net }));
   startBackend();
   try {
     await waitForBackend();
