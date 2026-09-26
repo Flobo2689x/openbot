@@ -10,16 +10,13 @@ export { ApiError } from "./errors";
 
 declare global {
   interface Window {
-    openbotDesktop?: { isElectron: boolean; apiBase?: string };
+    openbotDesktop?: { isElectron: boolean };
   }
 }
 
-// Packaged Electron renders from file://, so relative URLs cannot reach the API.
-// Browser/Vite retains the existing relative base and proxy behavior.
-const desktopApiBase = typeof window !== "undefined" ? window.openbotDesktop?.apiBase : undefined;
-export const BASE = desktopApiBase
-  ? `${desktopApiBase.replace(/\/$/, "")}/api/v1`
-  : "/api/v1";
+// Relative everywhere: the browser build is served by the backend, Vite proxies /api in
+// development, and the packaged Electron app proxies /api from its app://openbot origin.
+export const BASE = "/api/v1";
 const KEY = "openbot_api_key";
 const ACTOR = "openbot_actor_handle";
 export const getApiKey = (): string => { try { return localStorage.getItem(KEY) ?? ""; } catch { return ""; } };

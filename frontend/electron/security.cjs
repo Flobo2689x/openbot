@@ -14,19 +14,22 @@ function isApprovedExternalUrl(rawUrl) {
     url.searchParams.has("state");
 }
 
-function sameOriginOrPackagedPath(rawUrl, configuredUrl) {
+/**
+ * Origin of a URL as Chromium sees it. Node's URL parser gives non-special schemes such as
+ * app://openbot the opaque origin "null", but a scheme registered as standard is a real origin
+ * in the renderer, so rebuild it from scheme and host.
+ */
+function originOf(rawUrl) {
+  const url = new URL(rawUrl);
+  if (url.origin !== "null") return url.origin;
+  return url.host ? `${url.protocol}//${url.host}` : "null";
+}
+
+function isSameOrigin(rawUrl, configuredUrl) {
   try {
-    const candidate = new URL(rawUrl);
-    const configured = new URL(configuredUrl);
-    // file:// has an opaque/null origin, so origin equality alone would allow
-    // navigation to any local file. Restrict it to the packaged entry document;
-    // query strings and hashes remain valid application URL variants.
-    if (configured.protocol === "file:") {
-      return candidate.protocol === "file:" &&
-        candidate.host === configured.host &&
-        candidate.pathname === configured.pathname;
-    }
-    return candidate.origin === configured.origin;
+    const candidate = originOf(rawUrl);
+    // Opaque origins (file://, data:) are never same-origin with anything, including each other.
+    return candidate !== "null" && candidate === originOf(configuredUrl);
   } catch {
     return false;
   }
@@ -42,4 +45,4 @@ function contentSecurityPolicy(configuredOrigin, apiOrigin = configuredOrigin) {
   ].join("; ");
 }
 
-module.exports = { contentSecurityPolicy, isApprovedExternalUrl, sameOriginOrPackagedPath };
+module.exports = { contentSecurityPolicy, isApprovedExternalUrl, isSameOrigin, originOf };
