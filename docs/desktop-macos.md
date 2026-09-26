@@ -12,7 +12,7 @@ open frontend/release/OpenBot-0.0.0-arm64.dmg
 
 Drag `OpenBot.app` to `/Applications`. The exact artifact name includes the app version and architecture; the ZIP in the same directory is an alternative distribution.
 
-The packaged app loads the Vite build from `file://` and starts the bundled backend resource on `127.0.0.1:8000`. The window opens right away with a local "Starting OpenBot…" page (`frontend/electron/loading.html`) and switches to the app once `/api/v1/health` answers. If the app URL fails to load (for example Vite is not running in development, or `OPENBOT_URL` is unreachable), the window shows "Can't reach OpenBot" and retries every few seconds instead of staying blank. Backend data is kept in macOS Application Support. On quit, Electron sends SIGTERM to the backend process group.
+The packaged app serves the Vite build from `app://openbot`, which also proxies `/api` to the bundled backend it starts on `127.0.0.1:8000` (see `frontend/electron/scheme.cjs`). The window opens right away with a local "Starting OpenBot…" page (`frontend/electron/loading.html`) and switches to the app once `/api/v1/health` answers. If the app URL fails to load (for example Vite is not running in development, or `OPENBOT_URL` is unreachable), the window shows "Can't reach OpenBot" and retries every few seconds instead of staying blank. Backend data is kept in macOS Application Support. On quit, Electron sends SIGTERM to the backend process group.
 
 The backend resource is launched with `uv`; therefore users must have `uv` installed and available on PATH. A future release can replace `scripts/electron-backend.sh` with a frozen Python executable without changing the Electron packaging contract.
 
