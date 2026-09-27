@@ -332,6 +332,11 @@ Bots select from a registry of built-in tools (`run_shell`, `read_file`, `write_
 core tools every bot always has (`list_bots`, `ask_human`, `read_history`,
 `recall_messages`, and LangMem's `manage_memory`/`search_memory`).
 
+`run_shell` runs `bash -lc`. On Windows, it and `patch_file` use the `bash.exe` and `patch.exe` of
+[Git for Windows](https://git-scm.com/download/win), found next to `git` on `PATH` or in its standard
+install locations. `System32\bash.exe`, the WSL launcher, is never used. Without Git for Windows both
+tools return an error that says to install it.
+
 To add your own tools, drop a Python file with one or more
 [`@tool`](https://python.langchain.com/docs/concepts/tools/)-decorated functions into `TOOLS_DIR`
 (default `./tools`) — every module-level `BaseTool` in that directory is loaded automatically.

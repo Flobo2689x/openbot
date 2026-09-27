@@ -1,5 +1,6 @@
 """OAuth plumbing for remote MCP servers: encrypted credential storage and the split redirect/callback flow."""
 import asyncio
+import sys
 
 import pytest
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
@@ -16,7 +17,9 @@ from openbot.mcp.oauth import (
 def test_key_is_generated_once_and_kept_private(tmp_path):
     path = tmp_path / "k.key"
     k1 = load_or_create_key(None, path)
-    assert path.is_file() and oct(path.stat().st_mode & 0o777) == "0o600"
+    assert path.is_file()
+    if sys.platform != "win32":                                        # Windows has no POSIX mode bits
+        assert oct(path.stat().st_mode & 0o777) == "0o600"
     assert load_or_create_key(None, path) == k1                      # stable across restarts
     assert load_or_create_key("explicit-key-wins", path) == "explicit-key-wins"
 

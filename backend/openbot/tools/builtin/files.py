@@ -1,8 +1,10 @@
 import asyncio
 import os
+import sys
 
 from langchain.tools import ToolRuntime, tool
 
+from openbot.tools.builtin.git_for_windows import INSTALL_HINT, find_git_patch
 from openbot.tools.builtin.workspace import STATE_DIR, cap, resolve_in_workspace
 from openbot.tools.context import RunContext
 
@@ -91,7 +93,13 @@ async def _apply_patch_command(
     if strip_level < 0:
         return f"error: strip_level must be >= 0, got {strip_level}"
 
-    cmd = ["patch"]
+    patch = "patch"
+    if sys.platform == "win32":
+        found = find_git_patch()
+        if found is None:
+            return INSTALL_HINT.format(tool="patch_file")
+        patch = str(found)
+    cmd = [patch]
     cmd.append(f"-p{strip_level}")
     if dry_run:
         cmd.append("--dry-run")

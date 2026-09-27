@@ -53,7 +53,7 @@ async def test_tools_honour_the_context_output_cap(tmp_path):
     small = rt(tmp_path, cap_chars=1000)
     out = await read_file.ainvoke({"path": "big.txt", "runtime": small})
     assert len(out) < 1200 and "start_line/end_line" in out
-    out = await run_shell.ainvoke({"command": "python3 -c \"print('y'*5000)\"", "runtime": small})
+    out = await run_shell.ainvoke({"command": "printf '%5000s' | tr ' ' y", "runtime": small})
     assert len(out) < 1200 and "[truncated" in out and out.startswith("exit code: 0")
 
 
@@ -337,7 +337,7 @@ def test_shell_output_cap_is_tighter_than_the_file_cap():
 
 async def test_run_shell_uses_its_own_cap(tmp_path):
     r = rt(tmp_path, cap_chars=8000, shell_cap_chars=1000)
-    out = await run_shell.ainvoke({"command": "python3 -c \"print('y'*5000)\"", "runtime": r})
+    out = await run_shell.ainvoke({"command": "printf '%5000s' | tr ' ' y", "runtime": r})
     assert len(out) < 1200 and "[truncated" in out
 
 
