@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, net, protocol, session, shell } = require("electron");
+const { app, BrowserWindow, dialog, Menu, net, protocol, session, shell } = require("electron");
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
@@ -7,6 +7,7 @@ const { appIconPath } = require("./icon.cjs");
 const { parseBackendUrl, resolveApiOrigin } = require("./origin.cjs");
 const { APP_SCHEME, APP_URL, createAppProtocolHandler, schemePrivileges } = require("./scheme.cjs");
 const { UV_MISSING, backendLaunch, findUv } = require("./backend-launcher.cjs");
+const { applyApplicationMenu } = require("./menu.cjs");
 
 const isDevelopment = !app.isPackaged;
 const backendPort = process.env.OPENBOT_BACKEND_PORT || "8000";
@@ -106,6 +107,8 @@ function createWindow({ waitingForBackend = false } = {}) {
   return window;
 }
 app.whenReady().then(async () => {
+  app.setName("OpenBot");
+  applyApplicationMenu(Menu, shell, { platform: process.platform, isDevelopment });
   if (isDevelopment && process.platform === "darwin") app.dock?.setIcon(appIconPath);
   const csp = contentSecurityPolicy(configuredOrigin, apiOrigin);
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => callback({ responseHeaders: { ...details.responseHeaders, "Content-Security-Policy": [csp] } }));

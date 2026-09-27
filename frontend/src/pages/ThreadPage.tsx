@@ -13,6 +13,7 @@ import { ChevronLeftIcon, MoreIcon } from "../components/icons";
 import { isNearBottom, scrollToBottom } from "../lib/autoScroll";
 import { emptyThreadState, hydrate, mergeRun, reduceThreadEvent, type ThreadState } from "../lib/threadState";
 import { threadUsageLabel } from "../lib/threadUsage";
+import { setOpenBotTitle } from "../lib/documentTitle";
 
 export default function ThreadPage() {
   const { id = "" } = useParams();
@@ -136,6 +137,11 @@ export default function ThreadPage() {
     }
     return map;
   }, [bots.data]);
+
+  useEffect(() => {
+    const title = state.title ?? detail.data?.title;
+    if (title) setOpenBotTitle(title);
+  }, [state.title, detail.data?.title]);
 
   if (detail.isLoading) return <Spinner />;
   if (!detail.data) {

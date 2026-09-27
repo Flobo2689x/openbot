@@ -13,10 +13,12 @@ import BotEditorPage from "./pages/BotEditorPage";
 import BotPage from "./pages/BotPage";
 import SettingsPage from "./pages/SettingsPage";
 import ScheduledPage from "./pages/ScheduledPage";
+import DocumentTitle from "./components/DocumentTitle";
 
 export default function App() {
   return (
     <>
+    <DocumentTitle />
     <CustomCaret />
     <SaveNotification />
     <ApiKeyGate>

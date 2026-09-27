@@ -77,6 +77,13 @@ describe("Electron launcher paths", () => {
   });
 });
 
+describe("Electron application menu", () => {
+  it("installs an explicit application menu instead of Electron's default", () => {
+    expect(mainSource).toContain("applyApplicationMenu(Menu, shell");
+    expect(mainSource).toContain('app.setName("OpenBot")');
+  });
+});
+
 describe("Electron packaged startup", () => {
   it("uses the branded macOS bundle and ships backend resources", () => {
     expect(builderSource).toContain("productName: OpenBot");
