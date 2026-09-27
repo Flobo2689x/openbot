@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Builds the desktop app for macOS (arm64 + x64) and Linux (x64) and publishes it as a GitHub
-# release tagged v<major.minor.build> (see frontend/scripts/version.cjs). Builds are unsigned.
+# Builds the desktop app for macOS (arm64 + x64), Linux (x64) and Windows (x64) and publishes it as
+# a GitHub release tagged v<major.minor.build> (see frontend/scripts/version.cjs). Builds are unsigned.
 #
 # The build runs in a throwaway `git worktree` of HEAD, never the working copy: electron-builder
 # bundles all of backend/, and a working copy can hold untracked secrets (backend/secret.key)
@@ -52,10 +52,11 @@ rm -rf "$OUT"
     "-c.extraMetadata.version=$VERSION" "-c.directories.output=$OUT")
   "${builder[@]}" --mac --arm64 --x64
   "${builder[@]}" --linux --x64
+  "${builder[@]}" --win --x64
 )
 
 shopt -s nullglob
-ASSETS=("$OUT"/*.dmg "$OUT"/*.zip "$OUT"/*.AppImage)
+ASSETS=("$OUT"/*.dmg "$OUT"/*.zip "$OUT"/*.AppImage "$OUT"/*.exe)
 (( ${#ASSETS[@]} > 0 )) || die "no build artifacts found in $OUT"
 
 if [[ -n "$DRY_RUN" ]]; then
@@ -66,7 +67,8 @@ fi
 
 NOTES="These builds are unsigned. On macOS, right-click OpenBot.app and choose Open the first time, \
 or run \`xattr -dr com.apple.quarantine /Applications/OpenBot.app\`. On Linux, \`chmod +x\` the \
-AppImage. The app needs [uv](https://docs.astral.sh/uv/) installed to run its bundled backend."
+AppImage. On Windows, SmartScreen warns about the unsigned installer: choose More info, then Run \
+anyway. The app needs [uv](https://docs.astral.sh/uv/) installed to run its bundled backend."
 # GitHub creates the tag at $SHA as part of the release, so a failed build never leaves a stray tag.
 gh release create "$TAG" "${ASSETS[@]}" --target "$SHA" --title "OpenBot $VERSION" --notes "$NOTES" --generate-notes
 git fetch --quiet --tags origin
