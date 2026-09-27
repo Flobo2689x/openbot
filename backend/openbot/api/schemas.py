@@ -445,6 +445,24 @@ class McpConnectOut(BaseModel):
     authorization_url: str | None = None
 
 
+class McpCatalogEntryOut(BaseModel):
+    id: str
+    name: str
+    description: str
+    provider: str
+    source_url: str
+    transport: str
+    command: str
+    args: list[str]
+    required_credentials: list[str]
+    compatibility: list[str]
+
+
+class McpCatalogInstall(BaseModel):
+    name: str = Field(pattern=r"^[a-zA-Z0-9_-]{1,40}$")
+    env: dict[str, str] = {}
+
+
 class SettingOut(BaseModel):
     key: str
     group: str
