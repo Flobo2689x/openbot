@@ -1,4 +1,30 @@
-# OpenBot
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="frontend/public/logo-lockup-dark.svg">
+    <img src="frontend/public/logo-lockup-light.svg" alt="OpenBot" width="320">
+  </picture>
+</h1>
+
+<p align="center">
+  <b>An open-source, self-hosted platform for running a team of persistent AI bots.</b>
+</p>
+
+<p align="center">
+  <a href="https://github.com/regnull/openbot/actions/workflows/ci.yml"><img src="https://github.com/regnull/openbot/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
+  <img src="https://img.shields.io/badge/python-3.12%2B-3776AB.svg?logo=python&logoColor=white" alt="Python 3.12+">
+  <img src="https://img.shields.io/badge/node-24%2B-5FA04E.svg?logo=nodedotjs&logoColor=white" alt="Node 24+">
+</p>
+
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#demo-walkthrough">Demo</a> ·
+  <a href="#concepts">Concepts</a> ·
+  <a href="#trust-model--security">Security</a> ·
+  <a href="#api">API</a> ·
+  <a href="#configuration">Configuration</a> ·
+  <a href="#troubleshooting">Troubleshooting</a>
+</p>
 
 OpenBot is an open-source, self-hosted platform for running a team of persistent AI bots. Each
 bot has a name, a description, and instructions that govern its behavior. Bots talk to humans and
@@ -13,14 +39,20 @@ when mail arrives, runs an LLM-driven agent loop with tools and memory, and repl
 delivers new mail and can wake the next bot. This uniform model is what lets a human, a bot, and a
 webhook-driven external system all participate in the same conversation the same way.
 
-![OpenBot Screenshot](docs/images/openbot-screenshot.png)
+<p align="center">
+  <img src="docs/images/openbot-screenshot.png" alt="OpenBot Screenshot" width="900">
+</p>
 
 ## Features
 
 - **Actor model runtime**: bots, humans, and external systems are all actors with inboxes; one
   run at a time per bot, with a global concurrency cap.
-- **Multi-bot workflows**: user messages without an explicit bot mention go to the thread default bot (`@chief_of_staff` unless changed); bots hand off to each other with `@mention` (only the first mention in a bot's reply wakes a bot, so a hand-off is always to one bot; if the bot has newer messages waiting in the thread the hand-off is held and delivered automatically once it catches up), with a hop limit to
-  prevent runaway bot-to-bot loops.
+- **Multi-bot workflows**: user messages without an explicit bot mention go to the thread default
+  bot (`@chief_of_staff` unless changed); bots hand off to each other with `@mention`, with a hop
+  limit to prevent runaway bot-to-bot loops.
+  - Only the first mention in a bot's reply wakes a bot, so a hand-off is always to one bot.
+  - If the bot has newer messages waiting in the thread, the hand-off is held and delivered
+    automatically once it catches up.
 - **Tools**: built-in shell/file/HTTP tools rooted at a workspace directory, a plugin
   directory of your own Python tools, and tools from any [MCP server](#mcp-servers) (remote
   or stdio, with OAuth), all selectable per bot. `run_shell` is **not** sandboxed — see
@@ -218,6 +250,18 @@ repository, using the [`gh`](https://cli.github.com/) CLI.
 
    > Add a `--version` flag to the CLI and open a PR.
 
+   ```mermaid
+   flowchart LR
+     you(["@you"]) -->|request| cos["@chief_of_staff"]
+     cos -->|delegates| eng["@engineer"]
+     eng -->|opens PR| rev["@reviewer"]
+     rev -.->|feedback| eng
+     rev -->|hands off| qa["@qa"]
+     qa -->|asks for approval| you
+     you -.->|approve| qa
+     qa -->|merges PR| done(["merged"])
+   ```
+
 4. Watch the hand-off: Chief of Staff delegates to `@engineer`, who implements the change, opens
    a PR, and mentions `@reviewer`; the reviewer reviews the diff with `gh pr diff` and mentions
    `@qa` (or sends feedback back to `@engineer`); QA checks out the branch, runs the tests, and
@@ -237,12 +281,15 @@ repository, using the [`gh`](https://cli.github.com/) CLI.
 | **Approval** | A pause requested by a tool (`ask_human`, or a tool flagged for approval) that turns into a `question` inbox item for the human and any external participants; the bot resumes once it is answered. |
 | **Memory** | Per-bot long-term memory in the LangGraph store, searchable and updatable by the bot, refreshed by a background reflection step after each run. Nothing is ever purged. |
 
+For how these pieces fit together inside the backend, see [docs/architecture.md](docs/architecture.md).
+
 ## Trust model / security
 
-OpenBot is built for a **single trusted operator running it on their own machine**. There is no
-login, no user accounts, and no privilege separation. Anyone who can reach the HTTP port and anyone
-who can get a bot to run a tool has, in practice, the privileges of the server process. Read this
-before exposing OpenBot to a network or pointing a bot at untrusted input.
+> [!WARNING]
+> OpenBot is built for a **single trusted operator running it on their own machine**. There is no
+> login, no user accounts, and no privilege separation. Anyone who can reach the HTTP port and anyone
+> who can get a bot to run a tool has, in practice, the privileges of the server process. Read this
+> before exposing OpenBot to a network or pointing a bot at untrusted input.
 
 - **`run_shell` is not sandboxed.** It executes arbitrary commands with `bash -lc` as the user
   running the server, with that user's full filesystem and network access. The only thing the
@@ -273,9 +320,10 @@ before exposing OpenBot to a network or pointing a bot at untrusted input.
   per-tool approval flags for anything destructive, and do not run OpenBot against repositories or
   URLs you do not trust.
 
-Practical guidance: bind to `127.0.0.1`, keep it off shared networks, set `OPENBOT_API_KEY` even
-locally, and run it as a dedicated low-privilege user (or in a VM/container) if bots have
-`run_shell`. Docker sandboxing for tools is on the roadmap, not in v1.
+> [!TIP]
+> Practical guidance: bind to `127.0.0.1`, keep it off shared networks, set `OPENBOT_API_KEY` even
+> locally, and run it as a dedicated low-privilege user (or in a VM/container) if bots have
+> `run_shell`. Docker sandboxing for tools is on the roadmap, not in v1.
 
 ## Tools and plugins
 
@@ -382,6 +430,9 @@ def verify(secret: str, body: bytes, signature_header: str) -> bool:
 Base URL `/api/v1`, JSON throughout, OpenAPI docs at `/docs`. If `OPENBOT_API_KEY` is set, every
 route except `/health` requires an `X-API-Key` header.
 
+<details>
+<summary>Endpoint reference</summary>
+
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/actors` | all actors (kind, handle, name, enabled) |
@@ -406,6 +457,8 @@ route except `/health` requires an `X-API-Key` header.
 | GET | `/tools`, `/providers`, `/health` | registry status, configured providers, liveness |
 | GET | `/events?thread_id=` | SSE stream: `message.created`, `run.updated`, `run.event`, `inbox.updated` |
 
+</details>
+
 ## Configuration
 
 Configuration lives in two places, by design:
@@ -428,6 +481,9 @@ opt out for that bot.
 
 ### `.env`
 
+<details>
+<summary><code>.env</code> variables</summary>
+
 | Variable | Default | Notes |
 |---|---|---|
 | `DATABASE_URL` | `sqlite+aiosqlite:///./.openbot/openbot.db` | Any SQLAlchemy async URL. `postgresql+asyncpg://...` is supported by the same schema and Alembic migrations, but is untested in v1. |
@@ -448,10 +504,15 @@ opt out for that bot.
 | `ACTIVITY_LOG_RETENTION_DAYS` | `14` | Days of activity-log rows (`activity_log` table) kept; pruned at startup. `0` keeps everything. |
 | `LANGSMITH_TRACING`, `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT`, `LANGSMITH_ENDPOINT` | `false`, unset, `openbot`, unset | LangSmith tracing; the SDK reads these from the environment. |
 
+</details>
+
 ### Settings
 
 Edited on the Settings page (`GET/PATCH /api/v1/settings`). The environment variable of the same
 name, if set, is the default the page shows and the value a reset returns to.
+
+<details>
+<summary>Settings reference</summary>
 
 | Group | Setting | Notes |
 |---|---|---|
@@ -470,9 +531,11 @@ name, if set, is the default the page shows and the value a reset returns to.
 | Model retries | `model_retry_max_attempts` (3), `model_retry_base_delay` (2.0), `model_retry_backoff_cap` (60.0) | Retries a model call that failed with a transient upstream provider error (rate limit, 5xx, "model stopped before completing"); 0 or 1 attempts disables retries. Delays double from the base with jitter up to the cap. Auth/permission/invalid-request errors fail immediately. |
 | Telegram | `telegram_bot_token`, `telegram_webhook_url`, `telegram_webhook_secret` | Telegram Bot API token (secret: encrypted at rest, masked in API), public webhook URL for receiving updates, and shared secret for `X-Telegram-Bot-Api-Secret-Token` header validation. Token overrides the `TELEGRAM_BOT_TOKEN` env var when set via the UI. |
 
+</details>
+
 ## Database
 
-SQLite (`DATABASE_URL=sqlite+aiosqlite:///./openbot.db`) is the default and what the test suite
+SQLite (`DATABASE_URL=sqlite+aiosqlite:///./.openbot/openbot.db`) is the default and what the test suite
 and demo walkthrough use. All application code goes through SQLAlchemy 2 async and Alembic, with
 no SQLite-only SQL, so a `postgresql+asyncpg://...` URL should work as a drop-in replacement —
 this path is untested in v1 but is the intended upgrade route. Alembic migrations run
@@ -566,8 +629,7 @@ Or, from the repo root: `make test`, `make lint`, `make build`. `make reset_db` 
 SQLite databases (app and LangGraph state); the next start re-runs migrations and re-seeds the demo bots.
 `make sync_bots` updates the existing demo bots' instructions, tools and limits from the seed definitions
 without touching threads, runs or memories; use it after pulling a change to the seeded team.
-The live provider smoke
-tests in `backend/tests/smoke/` are marked `smoke` and deselected by default (`addopts =
+The live provider smoke tests in `backend/tests/smoke/` are marked `smoke` and deselected by default (`addopts =
 "-m 'not smoke'"`), so `make test` never bills a provider; run them deliberately with
 `make smoke`. Each one skips unless the matching API key is configured.
 
