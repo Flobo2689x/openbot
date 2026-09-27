@@ -2,25 +2,17 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { Api } from "../api/client";
-import type { BotInboxItem, PurgeResult } from "../api/types";
+import type { BotInboxItem } from "../api/types";
 import BotIcon from "../components/BotIcon";
 import { Badge, Button, Card, EmptyState, ErrorText, Hint, Kbd, Spinner, Textarea } from "../components/ui";
 import { ChevronLeftIcon } from "../components/icons";
-import { hasOpenItems, inboxRowState } from "../lib/botInbox";
+import { hasOpenItems, inboxRowState, purgeSummary } from "../lib/botInbox";
 import { parseTs } from "../lib/time";
 import BotEditorPage from "./BotEditorPage";
 import { modKey } from "../lib/shortcuts";
 
 const TABS = ["inbox", "memory", "settings"] as const;
 type Tab = (typeof TABS)[number];
-
-/** One line for what a purge did, so "nothing happened" reads as such rather than as a silent no-op. */
-export function purgeSummary(r: PurgeResult): string {
-  if (!r.cancelled_runs && !r.purged_items) return "Nothing to cancel: no open run and an empty queue.";
-  const runs = r.cancelled_runs === 1 ? "1 run" : `${r.cancelled_runs} runs`;
-  const items = r.purged_items === 1 ? "1 queued item" : `${r.purged_items} queued items`;
-  return `Cancelled ${runs}, dropped ${items}.`;
-}
 
 export default function BotPage() {
   const { id = "" } = useParams();

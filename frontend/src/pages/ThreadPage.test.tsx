@@ -2,9 +2,9 @@
 // React 19: act() must know it runs in a test environment (no RTL here to set it for us).
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { act } from "react";
+import { act, useEffect } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import ThreadPage from "./ThreadPage";
 import type { Bot, Message, Run, ThreadDetail } from "../api/types";
@@ -52,7 +52,6 @@ describe("ThreadPage window re-entry", () => {
   // later response — the fake must behave the same way or it manufactures bugs.
   let server: Record<string, Message[]>;
   const navRef: { current: null | ((to: string) => void) } = { current: null };
-  const locationRef: { current: null | { pathname: string } } = { current: null };
 
   const text = (): string => el.textContent ?? "";
   const until = async (cond: () => boolean, what: string): Promise<void> => {
@@ -66,8 +65,8 @@ describe("ThreadPage window re-entry", () => {
   // ThreadPage reads the thread id from the router, so window switches are driven through the
   // router itself: another thread window is just another route, like in the real app.
   const App = () => {
-    navRef.current = useNavigate();
-    locationRef.current = useLocation();
+    const navigate = useNavigate();
+    useEffect(() => { navRef.current = navigate; }, [navigate]);
     return (
       <Routes>
         <Route path="/threads/:id" element={<ThreadPage />} />

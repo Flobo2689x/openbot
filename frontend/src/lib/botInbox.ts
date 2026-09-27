@@ -1,4 +1,4 @@
-import type { BotInboxItem } from "../api/types";
+import type { BotInboxItem, PurgeResult } from "../api/types";
 
 export type RowTone = "zinc" | "green" | "amber" | "red" | "blue";
 export interface RowState { label: string; tone: RowTone; open: boolean }
@@ -16,3 +16,11 @@ export function inboxRowState(item: BotInboxItem): RowState {
 
 /** True while anything is still in flight; the inbox view polls only then. */
 export const hasOpenItems = (items: BotInboxItem[]): boolean => items.some((i) => inboxRowState(i).open);
+
+/** One line for what a purge did, so "nothing happened" reads as such rather than as a silent no-op. */
+export function purgeSummary(r: PurgeResult): string {
+  if (!r.cancelled_runs && !r.purged_items) return "Nothing to cancel: no open run and an empty queue.";
+  const runs = r.cancelled_runs === 1 ? "1 run" : `${r.cancelled_runs} runs`;
+  const items = r.purged_items === 1 ? "1 queued item" : `${r.purged_items} queued items`;
+  return `Cancelled ${runs}, dropped ${items}.`;
+}
