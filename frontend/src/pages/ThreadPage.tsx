@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { Api, type AttachmentIn } from "../api/client";
+import type { ThreadDetail } from "../api/types";
 import { isBackendUnavailable } from "../api/errors";
 import { useBusEvents } from "../api/sse";
 import Composer from "../components/Composer";
@@ -47,15 +48,19 @@ export default function ThreadPage() {
     const el = scrollContainer.current;
     if (el) shouldStickToBottom.current = isNearBottom(el);
   }, []);
-  useEffect(() => {
-    const cached = qc.getQueryData<ThreadState>(["thread-state", id]);
-    setState(cached ?? emptyThreadState(id));
+  // Switching threads reuses this component, so the transcript is reset while rendering the new
+  // id rather than in an effect: an effect would first commit the previous thread's state.
+  const [stateId, setStateId] = useState(id);
+  const [hydratedFrom, setHydratedFrom] = useState<ThreadDetail>();
+  if (stateId !== id) {
+    setStateId(id);
+    setState(qc.getQueryData<ThreadState>(["thread-state", id]) ?? emptyThreadState(id));
     setHasMore(false);
-    shouldStickToBottom.current = true;
-  }, [id, qc]);
+    setHydratedFrom(undefined);
+  }
+  useEffect(() => { shouldStickToBottom.current = true; }, [id]);
   useEffect(() => {
-    // During a route change, state still belongs to the previous id until the reset effect runs.
-    // Never overwrite the destination thread's snapshot with that stale state.
+    // Never overwrite a thread's snapshot with state that belongs to another thread.
     if (state.threadId === id) qc.setQueryData(["thread-state", id], state);
   }, [id, qc, state]);
   // Navigating from one thread window straight to another reuses this component instance, so the
@@ -69,12 +74,14 @@ export default function ThreadPage() {
     prevId.current = id;
     qc.invalidateQueries({ queryKey: ["thread", id] });
   }, [id, qc]);
-  useEffect(() => {
-    if (detail.data) {
-      setState((s) => hydrate(s, detail.data));
-      setHasMore(detail.data.has_more);
-    }
-  }, [id, detail.data]);
+  // Merge every new thread response into the transcript, also while rendering. Right after a
+  // thread switch this waits one pass until the reset above has landed.
+  const fetched = detail.data;
+  if (fetched && fetched !== hydratedFrom && stateId === id) {
+    setHydratedFrom(fetched);
+    setState((s) => hydrate(s, fetched));
+    setHasMore(fetched.has_more);
+  }
   // Ack on open and whenever new messages land, so the inbox badge stays honest.
   useEffect(() => { Api.ackThread(id).then(() => qc.invalidateQueries({ queryKey: ["inbox"] })).catch(() => {}); }, [id, qc, state.messages.length]);
   // Events published while the SSE socket was down are not replayed, so a reconnect leaves the

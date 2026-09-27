@@ -180,4 +180,19 @@ describe("ThreadPage window re-entry", () => {
     const order = [text().indexOf("first reply"), text().indexOf("reply posted while away")];
     expect(order[0]).toBeLessThan(order[1]);
   });
+
+  it("does not carry one thread's transcript into another", async () => {
+    server.t2 = [msg("m9", "only in t2", "2026-01-01T00:00:09Z")];
+    await mount("/threads/t1");
+    await until(() => text().includes("first reply"), "initial history");
+    await act(async () => {
+      sse.onEvent?.({ event: "run.event", thread_id: "t1", data: toolCall });
+    });
+    await until(() => text().includes("echo preserved"), "tool output");
+
+    await go("/threads/t2");
+    await until(() => text().includes("only in t2"), "second thread history");
+    expect(text()).not.toContain("first reply");
+    expect(text()).not.toContain("echo preserved");
+  });
 });
