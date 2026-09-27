@@ -1,5 +1,6 @@
 import asyncio
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -26,6 +27,29 @@ def rt(root: Path) -> ToolRuntime:
     return ToolRuntime(context=ctx(root), store=None, state={}, tool_call_id="c", config={}, stream_writer=lambda *_: None)
 
 
+# The pid of the last background job. Under Git Bash on Windows $! is an MSYS pid, not a Windows one.
+LAST_PID = "$(cat /proc/$!/winpid)" if sys.platform == "win32" else "$!"
+
+
+def alive(pid: int) -> bool:
+    if sys.platform == "win32":
+        # os.kill(pid, 0) would terminate the process on Windows instead of probing it.
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(0x1000, False, pid)            # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        code = ctypes.c_ulong()
+        kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+        kernel32.CloseHandle(handle)
+        return code.value == 259                                     # STILL_ACTIVE
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
 def test_resolve_in_workspace(tmp_path):
     root = tmp_path.resolve()
     assert resolve_in_workspace(root, None) == root
@@ -49,7 +73,7 @@ def test_validate_workspace_directory(tmp_path):
 
     outside = tmp_path / "outside"
     outside.mkdir()
-    assert validate_workspace_directory(root, str(outside)) == str(outside)
+    assert validate_workspace_directory(root, str(outside)) == outside.as_posix()
 
     for bad in ("../x", str(tmp_path / "missing"), "repo/missing", "repo/file.txt", "repo\nname"):
         with pytest.raises(ValueError):
@@ -111,7 +135,7 @@ async def test_run_shell_kills_process_group_on_timeout(tmp_path):
     r = rt(tmp_path)
     start = asyncio.get_event_loop().time()
     out = await run_shell.ainvoke({
-        "command": "sleep 5 & echo $! > child.pid; wait",
+        "command": f"sleep 5 & echo {LAST_PID} > child.pid; wait",
         "timeout": 1,
         "runtime": r,
     })
@@ -125,8 +149,7 @@ async def test_run_shell_kills_process_group_on_timeout(tmp_path):
     pid_file = tmp_path / "child.pid"
     assert pid_file.exists()
     child_pid = int(pid_file.read_text().strip())
-    with pytest.raises(ProcessLookupError):
-        os.kill(child_pid, 0)
+    assert not alive(child_pid)
 
 
 async def test_run_shell_kills_process_group_on_cancellation(tmp_path):
@@ -135,7 +158,7 @@ async def test_run_shell_kills_process_group_on_cancellation(tmp_path):
     # nothing will ever reap.
     r = rt(tmp_path)
     task = asyncio.create_task(run_shell.ainvoke({
-        "command": "sleep 5 & echo $! > child.pid; wait",
+        "command": f"sleep 5 & echo {LAST_PID} > child.pid; wait",
         "timeout": 30,
         "runtime": r,
     }))
@@ -145,18 +168,15 @@ async def test_run_shell_kills_process_group_on_cancellation(tmp_path):
         if pid_file.exists() and pid_file.read_text().strip():
             break
     child_pid = int(pid_file.read_text().strip())
-    os.kill(child_pid, 0)                     # alive before the cancel
+    assert alive(child_pid)                   # alive before the cancel
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
     for _ in range(100):
-        try:
-            os.kill(child_pid, 0)
-        except ProcessLookupError:
+        if not alive(child_pid):
             break
         await asyncio.sleep(0.01)
-    with pytest.raises(ProcessLookupError):
-        os.kill(child_pid, 0)
+    assert not alive(child_pid)
 
 
 def test_selectable_names():
@@ -207,6 +227,7 @@ def test_home_relative_core_web_and_rejects_traversal(tmp_path, monkeypatch):
     target = home / "work" / "core-web"
     target.mkdir(parents=True)
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))                     # what expanduser reads on Windows
     assert validate_workspace_directory(tmp_path / "workspace", "~/work/core-web") == "~/work/core-web"
     with pytest.raises(ValueError, match="cannot contain"):
         validate_workspace_directory(tmp_path / "workspace", "~/../outside")

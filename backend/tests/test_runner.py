@@ -1,3 +1,5 @@
+import sys
+
 from langgraph.types import Command
 from sqlalchemy import select
 
@@ -71,12 +73,15 @@ async def test_simple_reply_and_handoff(settings):
 async def test_runner_uses_thread_working_directory_for_tools(settings):
     (settings.workspace_root / "project").mkdir(parents=True)
     ScriptedChatModel.seen.clear()
-    services, _eng, _t, run = await make(settings, {"eng": [ai(tool_calls=[call("run_shell", command="pwd")]), ai("done")]},
+    # Git Bash on Windows prints /e/...; `pwd -W` gives the drive-letter form (with forward slashes).
+    project = settings.workspace_root / "project"
+    pwd, shown = ("pwd -W", project.as_posix()) if sys.platform == "win32" else ("pwd", str(project))
+    services, _eng, _t, run = await make(settings, {"eng": [ai(tool_calls=[call("run_shell", command=pwd)]), ai("done")]},
                                          working_directory="project", tool_names=["run_shell"])
     await services.runner.execute(run.id)
 
     assert str(settings.workspace_root / "project") in ScriptedChatModel.seen[0][0].content
-    assert any(e.type == "tool_result" and str(settings.workspace_root / "project") in e.payload["content"]
+    assert any(e.type == "tool_result" and shown in e.payload["content"]
                for e in await events(services, run.id))
 
 
