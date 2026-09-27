@@ -234,7 +234,9 @@ class SpaStaticFiles(StaticFiles):
             return await super().get_response(path, scope)
         except StarletteHTTPException as exc:
             # Not the app: a real 404 from the API namespace, or a path that names a file (has an extension).
-            if exc.status_code != 404 or path.startswith("api/") or "." in path.rsplit("/", 1)[-1]:
+            # StaticFiles hands over an OS path (api\v1\... on Windows), so compare with forward slashes.
+            route = path.replace("\\", "/")
+            if exc.status_code != 404 or route.startswith("api/") or "." in route.rsplit("/", 1)[-1]:
                 raise
             return await super().get_response("index.html", scope)
 
