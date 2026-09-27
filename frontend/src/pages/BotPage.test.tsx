@@ -5,7 +5,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import BotPage, { purgeSummary } from "./BotPage";
+import BotPage from "./BotPage";
 import type { Bot } from "../api/types";
 
 const fake = vi.hoisted(() => ({ api: {} as Record<string, (...args: never[]) => unknown> }));
@@ -15,14 +15,6 @@ const bot: Bot = {
   id: "b1", handle: "eng", name: "Engineer", description: "", icon: "robot", enabled: true, active: true, instructions: "",
   provider: "auto", model: "", model_settings: {}, tool_names: [], approval_tools: [], memory_enabled: true, created_at: "", updated_at: "",
 };
-
-describe("purgeSummary", () => {
-  it("reads naturally for zero, one and many", () => {
-    expect(purgeSummary({ cancelled_runs: 0, purged_items: 0 })).toBe("Nothing to cancel: no open run and an empty queue.");
-    expect(purgeSummary({ cancelled_runs: 1, purged_items: 1 })).toBe("Cancelled 1 run, dropped 1 queued item.");
-    expect(purgeSummary({ cancelled_runs: 2, purged_items: 3 })).toBe("Cancelled 2 runs, dropped 3 queued items.");
-  });
-});
 
 describe("BotPage cancel & purge", () => {
   let root: Root;

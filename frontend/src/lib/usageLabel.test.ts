@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { usageLabel } from "../components/RunCard";
+import { usageLabel } from "./usageLabel";
 
 describe("usageLabel", () => {
   it("is null until the run has reported any model call", () => {
