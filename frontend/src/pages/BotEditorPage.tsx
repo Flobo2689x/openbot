@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { Api } from "../api/client";
-import type { BotInput } from "../api/types";
+import type { Bot, BotInput } from "../api/types";
 import { useSaveMutation } from "../lib/saveNotifications";
 import { Button, Card, ErrorText, Field, Hint, Input, PageTitle, SectionTitle, Select, Spinner, Textarea } from "../components/ui";
 import { ChevronDownIcon, ChevronRightIcon } from "../components/icons";
@@ -40,7 +40,14 @@ export default function BotEditorPage() {
   const tools = useQuery({ queryKey: ["tools"], queryFn: Api.listTools });
   const providers = useQuery({ queryKey: ["providers"], queryFn: Api.getProviders });
   const [form, setForm] = useState<BotInput>(empty);
-  useEffect(() => { if (bot.data) { const { id: _i, created_at: _c, updated_at: _u, ...rest } = bot.data; setForm(rest); } }, [bot.data]);
+  // Load the form from each new bot response while rendering, so switching bots never shows a
+  // frame of the previous bot's settings.
+  const [loadedFrom, setLoadedFrom] = useState<Bot>();
+  if (bot.data && bot.data !== loadedFrom) {
+    const { id: _i, created_at: _c, updated_at: _u, ...rest } = bot.data;
+    setLoadedFrom(bot.data);
+    setForm(rest);
+  }
 
   const save = useSaveMutation({
     mutationFn: () => {
