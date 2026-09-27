@@ -11,8 +11,8 @@ extraResources:
     to: backend
     # uv creates .venv with an absolute shebang back to the machine that ran `uv sync`, so a
     # bundled .venv is not relocatable: on any other machine it points at a path that doesn't
-    # exist. Ship the source, pyproject.toml, and uv.lock instead, and let electron-backend.sh's
-    # `uv run` build a venv rooted in the *installed* app on first launch.
+    # exist. Ship the source, pyproject.toml, and uv.lock instead, and let the launcher's
+    # (frontend/electron/backend-launcher.cjs) `uv run` build a venv rooted in the *installed* app on first launch.
     filter:
       - "**/*"
       - "!.venv"
@@ -24,8 +24,6 @@ extraResources:
       - "!logs/**"
       - "!openbot.db*"
       - "!openbot.langgraph.db*"
-  - from: ../scripts/electron-backend.sh
-    to: backend/electron-backend.sh
   - from: ../tools
     to: tools
 icon: electron/assets/icon.png

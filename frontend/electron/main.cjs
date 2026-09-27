@@ -1,11 +1,12 @@
 const { app, BrowserWindow, dialog, net, protocol, session, shell } = require("electron");
 const fs = require("node:fs");
 const path = require("node:path");
-const { spawn } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
 const { contentSecurityPolicy, isApprovedExternalUrl, isSameOrigin, originOf } = require("./security.cjs");
 const { appIconPath } = require("./icon.cjs");
 const { resolveApiOrigin } = require("./origin.cjs");
 const { APP_SCHEME, APP_URL, createAppProtocolHandler, schemePrivileges } = require("./scheme.cjs");
+const { UV_MISSING, backendLaunch, findUv } = require("./backend-launcher.cjs");
 
 const isDevelopment = !app.isPackaged;
 const backendPort = process.env.OPENBOT_BACKEND_PORT || "8000";
@@ -22,6 +23,7 @@ protocol.registerSchemesAsPrivileged(schemePrivileges);
 const statusPage = path.join(__dirname, "loading.html");
 const retryDelayMs = 3000;
 let backendProcess;
+let backendStartError;
 let quitRequested = false;
 
 function sameOrigin(rawUrl) { return isSameOrigin(rawUrl, appUrl); }
@@ -30,23 +32,39 @@ const userDataDir = app.getPath("userData");
 const backendLogPath = path.join(userDataDir, "logs", "backend-launcher.log");
 function startBackend() {
   if (isDevelopment || usesExternalBackend) return;
-  const script = path.join(process.resourcesPath, "backend", "electron-backend.sh");
-  // The script is bash (`[[`, arrays, `set -E`), and /bin/sh is dash on Debian and Ubuntu, so
-  // it must be run by bash explicitly. Keep its output: with stdio ignored, a backend that dies
-  // at startup is indistinguishable from one that is slow, and the timeout dialog can point here.
-  fs.mkdirSync(path.dirname(backendLogPath), { recursive: true });
+  const launch = backendLaunch({ resourcesPath: process.resourcesPath, userDataDir, port: backendPort });
+  for (const dir of launch.dirs) fs.mkdirSync(dir, { recursive: true });
+  // Keep the backend's output: with stdio ignored, a backend that dies at startup is
+  // indistinguishable from one that is slow, and the timeout dialog can point here.
   const log = fs.openSync(backendLogPath, "a");
-  backendProcess = spawn("/bin/bash", [script], { detached: true, env: { ...process.env, OPENBOT_RESOURCES: process.resourcesPath, OPENBOT_USER_DATA: userDataDir, OPENBOT_BACKEND_PORT: backendPort, OPENBOT_ROOT_DIRECTORY: process.env.OPENBOT_ROOT_DIRECTORY }, stdio: ["ignore", log, log] });
+  const uv = findUv();
+  if (!uv) {
+    fs.writeSync(log, `${UV_MISSING}
+`);
+    backendStartError = new Error(`${UV_MISSING} See ${backendLogPath} for details.`);
+    return;
+  }
+  // uv is spawned directly, so no shell is involved on any platform. On macOS and Linux it leads
+  // its own process group, which stopBackend signals as a whole; Windows has no process groups.
+  backendProcess = spawn(uv, launch.args, { cwd: launch.cwd, env: launch.env, detached: process.platform !== "win32", windowsHide: true, stdio: ["ignore", log, log] });
   backendProcess.unref();
   backendProcess.on("error", (error) => console.error("OpenBot backend failed to start", error));
 }
 function stopBackend() {
   if (!backendProcess || backendProcess.killed) return;
-  try { process.kill(-backendProcess.pid, "SIGTERM"); } catch { backendProcess.kill("SIGTERM"); }
+  if (process.platform === "win32") {
+    // uv runs python as a child; /T ends the whole tree, which killing uv alone would not. It has
+    // to finish before quitting: Node puts its children in a kill-on-close job, so an async
+    // taskkill dies with the app, and uv with it, leaving python orphaned and the port taken.
+    spawnSync("taskkill", ["/pid", String(backendProcess.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore", timeout: 10_000 });
+  } else {
+    try { process.kill(-backendProcess.pid, "SIGTERM"); } catch { backendProcess.kill("SIGTERM"); }
+  }
   backendProcess = undefined;
 }
 async function waitForBackend() {
   if (isDevelopment || usesExternalBackend) return;
+  if (backendStartError) throw backendStartError;
   const healthUrl = `${apiOrigin}/api/v1/health`;
   // No .venv ships in the bundle, so the very first launch on a machine has uv build one from
   // scratch -- fetching a matching Python interpreter and every dependency -- before the backend

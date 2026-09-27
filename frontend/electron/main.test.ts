@@ -5,7 +5,6 @@ import { describe, expect, it } from "vitest";
 
 const mainSource = readFileSync(path.join(__dirname, "main.cjs"), "utf8");
 const builderSource = readFileSync(path.join(__dirname, "../../electron-builder.yml"), "utf8");
-const backendScriptSource = readFileSync(path.join(__dirname, "../../scripts/electron-backend.sh"), "utf8");
 const devScriptPath = path.join(__dirname, "../../scripts/electron-dev.sh");
 const devScriptSource = readFileSync(devScriptPath, "utf8");
 
@@ -27,8 +26,6 @@ describe("Electron launcher detail controls", () => {
 
   it("forwards a caller-supplied root directory", () => {
     expect(devScriptSource).toContain('ROOT_ARGS+=(--root-directory "$1")');
-    expect(backendScriptSource).toContain('ROOT_ARGS+=(--root-directory "$OPENBOT_ROOT_DIRECTORY")');
-    expect(mainSource).toContain("OPENBOT_ROOT_DIRECTORY: process.env.OPENBOT_ROOT_DIRECTORY");
     const output = execFileSync("make", ["-n", "electron", "ROOT_DIRECTORY=/tmp/openbot-root"], {
       cwd: path.resolve(__dirname, "../.."),
       encoding: "utf8",
@@ -95,11 +92,21 @@ describe("Electron packaged startup", () => {
     expect(mainSource).toContain("await waitForBackend();");
   });
 
-  it("runs the backend script with bash, since /bin/sh is dash on Debian and Ubuntu", () => {
-    // electron-backend.sh uses [[ ]], arrays and `set -E`; under dash it dies on its first line.
-    expect(backendScriptSource).toMatch(/^#!\/usr\/bin\/env bash/);
-    expect(mainSource).toContain('spawn("/bin/bash", [script]');
+  it("spawns uv directly, without a shell, so the launcher also works on Windows", () => {
+    expect(mainSource).toContain("spawn(uv, launch.args, { cwd: launch.cwd, env: launch.env");
+    expect(mainSource).not.toContain('spawn("/bin/bash"');
     expect(mainSource).not.toContain('spawn("/bin/sh"');
+    expect(builderSource).not.toContain("electron-backend.sh");
+  });
+
+  it("ends the whole backend tree on Windows, which has no process groups", () => {
+    // Synchronously: Node's kill-on-close job would end an async taskkill together with the app.
+    expect(mainSource).toContain('spawnSync("taskkill", ["/pid", String(backendProcess.pid), "/T", "/F"]');
+  });
+
+  it("explains a missing uv in the startup error instead of a bare exit code", () => {
+    expect(mainSource).toContain("backendStartError = new Error(`${UV_MISSING}");
+    expect(mainSource).toContain("if (backendStartError) throw backendStartError;");
   });
 
   it("keeps the backend's output and names the log in the startup error", () => {
@@ -123,7 +130,7 @@ describe("Electron packaged startup", () => {
   it("skips bundled backend startup and readiness for explicit API or remote URLs", () => {
     expect(mainSource).toContain("const usesExternalBackend = Boolean(process.env.OPENBOT_URL || process.env.OPENBOT_API_URL);");
     expect(mainSource).toContain("if (isDevelopment || usesExternalBackend) return;");
-    expect(mainSource).toContain("if (isDevelopment || usesExternalBackend) return;\n  const healthUrl");
+    expect(mainSource).toContain("if (isDevelopment || usesExternalBackend) return;\n  if (backendStartError) throw backendStartError;\n  const healthUrl");
   });
 
   it("quits on window-all-closed in development, including macOS", () => {
@@ -140,19 +147,6 @@ describe("Electron packaged startup", () => {
     // uv's venv scripts hardcode the path of the machine that ran `uv sync`; bundling one only
     // works on the machine that built the package. Ship the source and let uv build a fresh one.
     expect(builderSource).toMatch(/!\.venv\/?$|!\.venv\/\*\*/);
-  });
-
-  it("resolves uv from more than just an inherited PATH", () => {
-    // A GUI-launched app (double-clicked, not run from a terminal) gets a minimal launchd PATH
-    // that excludes user-local install directories, so `command -v uv` alone is not enough.
-    expect(backendScriptSource).toContain("command -v uv");
-    expect(backendScriptSource).toContain('"$HOME/.local/bin/uv"');
-    expect(backendScriptSource).not.toMatch(/^exec uv run/m);
-  });
-
-  it("builds the venv in the writable user-data dir, not inside the app bundle", () => {
-    // The bundle's Resources dir is not reliably writable once installed and signed.
-    expect(backendScriptSource).toContain('export UV_PROJECT_ENVIRONMENT="${OPENBOT_USER_DATA}/venv"');
   });
 });
 
