@@ -83,7 +83,8 @@ make electron-release   # host-platform build under frontend/release/ (alias: ma
 
 This needs Node 24+ and pnpm 10+. It builds the renderer, then runs electron-builder with the
 repository's `electron-builder.yml`, producing the host platform's artifacts under
-`frontend/release/`: `.dmg`/`.zip` on macOS, an AppImage on Linux. Local builds are versioned
+`frontend/release/`: `.dmg`/`.zip` on macOS, an AppImage on Linux, an NSIS installer
+(`OpenBot Setup <version>.exe`) on Windows. Local builds are versioned
 `<next version>-dev` (see [Versions](#versions)) so they can't be mistaken for a published release.
 They are unsigned and not notarized unless signing credentials are configured.
 
@@ -94,10 +95,11 @@ cd frontend
 pnpm electron:package --linux          # Linux x64 AppImage
 pnpm electron:package --mac --x64      # Intel Mac build on Apple Silicon
 pnpm electron:package --mac --universal
+pnpm electron:package --win --x64      # Windows x64 NSIS installer
 ```
 
-Windows builds are not usable yet: the packaged backend launcher (`scripts/electron-backend.sh`) is
-a bash script, so a Windows install would open but its backend would never start.
+On Windows, `make` is not needed: `cd frontend && pnpm electron:package` builds the installer
+natively.
 
 A local `make electron-release` bundles `backend/` from your working copy, untracked files included,
 so don't hand those builds to other people; use `make github-release`, which builds from a clean
@@ -106,8 +108,10 @@ checkout.
 #### Running a packaged app
 
 The packaged app bundles the backend source and runs it with [`uv`](https://docs.astral.sh/uv/),
-which must be installed on the machine (the launcher also checks `~/.local/bin`, `~/.cargo/bin`, and
-Homebrew locations, since apps started from Finder don't inherit your shell `PATH`). The first
+which must be installed on the machine. Besides `PATH`, the launcher
+(`frontend/electron/backend-launcher.cjs`) checks `~/.local/bin`, `~/.cargo/bin` and Homebrew locations,
+since apps started from Finder don't inherit your shell `PATH`; on Windows it checks
+`%USERPROFILE%\.local\bin\uv.exe` (uv's own installer), `~\.cargo\bin`, WinGet and Scoop. The first
 launch builds a Python environment and takes noticeably longer; a status page shows while the
 backend starts or if it becomes unreachable.
 
@@ -182,15 +186,16 @@ make github-release                  # build and publish vX.Y.N
 2. Computes the next version from `VERSION` and the latest tags.
 3. Builds from a temporary `git worktree` of `HEAD`, so untracked files such as
    `backend/secret.key` never end up in a public download.
-4. Builds macOS arm64 and x64 (`OpenBot-X.Y.N-mac-<arch>.dmg`/`.zip`) and Linux x64
-   (`OpenBot-X.Y.N.AppImage`), kept under `frontend/release/vX.Y.N/`.
+4. Builds macOS arm64 and x64 (`OpenBot-X.Y.N-mac-<arch>.dmg`/`.zip`), Linux x64
+   (`OpenBot-X.Y.N.AppImage`) and Windows x64 (`OpenBot Setup X.Y.N.exe`), kept under
+   `frontend/release/vX.Y.N/`.
 5. Creates the GitHub release with generated notes and uploads the builds. GitHub creates the
    `vX.Y.N` tag at the built commit as part of the release, so a failed build leaves no stray tag.
 
 Release builds are unsigned; the release notes tell testers how to open them (on macOS, right-click
 the app and choose **Open** the first time, or run
-`xattr -dr com.apple.quarantine /Applications/OpenBot.app`; on Linux, `chmod +x` the AppImage).
-Windows is not built yet (see above).
+`xattr -dr com.apple.quarantine /Applications/OpenBot.app`; on Linux, `chmod +x` the AppImage; on
+Windows, SmartScreen warns about the unsigned installer: choose **More info**, then **Run anyway**).
 
 ### Production-style run
 
