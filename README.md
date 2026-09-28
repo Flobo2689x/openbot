@@ -225,9 +225,10 @@ make github-release                  # build and publish vX.Y.N
 
 `make github-release` (`scripts/github-release.sh`):
 
-1. Checks that tracked files are clean, you are on `main`, `HEAD` matches `origin/main`, and the
-   release doesn't already exist. With `DRY_RUN=1` the branch and sync checks only warn, so you can
-   try a release off a feature branch.
+1. Checks that tracked files are clean, you are on `main`, `HEAD` matches `origin/main`, `HEAD`
+   isn't already a released `vX.Y.N` tag, and the release doesn't already exist. With `DRY_RUN=1`
+   the branch, sync and already-released checks only warn, so you can try a release off a feature
+   branch or rebuild a released commit.
 2. Computes the next version from `VERSION` and the latest tags.
 3. Builds from a temporary `git worktree` of `HEAD`, so untracked files such as
    `backend/secret.key` never end up in a public download.
