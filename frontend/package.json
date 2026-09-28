@@ -1,5 +1,5 @@
 {
-  "name": "frontend",
+  "name": "openbot",
   "productName": "OpenBot",
   "private": true,
   "main": "electron/main.cjs",

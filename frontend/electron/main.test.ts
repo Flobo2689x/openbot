@@ -134,6 +134,13 @@ describe("Electron packaged startup", () => {
     expect(builderSource).toContain("productName: OpenBot");
   });
 
+  it("names the package so installs are not called frontend", () => {
+    // electron-builder takes the package name, not productName, for the per-user Windows install
+    // folder (%LOCALAPPDATA%\Programs\<name>) and the Linux executable.
+    const packageJson = JSON.parse(readFileSync(path.join(__dirname, "../package.json"), "utf8"));
+    expect(packageJson.name).toBe("openbot");
+  });
+
     it("skips bundled backend startup and readiness for explicit API, remote URLs, or --backend_url", () => {
     expect(mainSource).toContain("const usesExternalBackend = Boolean(cliBackendUrl || process.env.OPENBOT_URL || process.env.OPENBOT_API_URL);");
     expect(mainSource).toContain("if (isDevelopment || usesExternalBackend) return;");
