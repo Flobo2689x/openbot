@@ -11,7 +11,7 @@ import MessageList from "../components/MessageList";
 import { Button, ErrorText, IconButton, OfflineNotice, Spinner } from "../components/ui";
 import { ChevronLeftIcon, MoreIcon } from "../components/icons";
 import { isNearBottom, scrollToBottom } from "../lib/autoScroll";
-import { emptyThreadState, hydrate, mergeRun, reduceThreadEvent, type ThreadState } from "../lib/threadState";
+import { emptyThreadState, hydrate, mergeRun, missedRunEnds, reduceThreadEvent, type ThreadState } from "../lib/threadState";
 import { threadUsageLabel } from "../lib/threadUsage";
 import { setOpenBotTitle } from "../lib/documentTitle";
 
@@ -83,6 +83,21 @@ export default function ThreadPage() {
     setState((s) => hydrate(s, fetched));
     setHasMore(fetched.has_more);
   }
+  // A run this page still shows as open but the latest response no longer lists has finished
+  // unseen; fetch its final state once per response, or its card would stay "running" for good.
+  const checkedRuns = useRef<{ from?: ThreadDetail; ids: Set<string> }>({ ids: new Set() });
+  useEffect(() => {
+    if (!fetched || fetched !== hydratedFrom || fetched.id !== id) return;
+    if (checkedRuns.current.from !== fetched) checkedRuns.current = { from: fetched, ids: new Set() };
+    for (const runId of missedRunEnds(state, fetched)) {
+      if (checkedRuns.current.ids.has(runId)) continue;
+      checkedRuns.current.ids.add(runId);
+      Api.getRun(runId)
+        .then(({ events: _events, ...run }) => setState((s) =>
+          s.threadId === run.thread_id ? reduceThreadEvent(s, { event: "run.updated", thread_id: run.thread_id, data: run }) : s))
+        .catch(() => {});
+    }
+  }, [fetched, hydratedFrom, id, state]);
   // Ack on open and whenever new messages land, so the inbox badge stays honest.
   useEffect(() => { Api.ackThread(id).then(() => qc.invalidateQueries({ queryKey: ["inbox"] })).catch(() => {}); }, [id, qc, state.messages.length]);
   // Events published while the SSE socket was down are not replayed, so a reconnect leaves the

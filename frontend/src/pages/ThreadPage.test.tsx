@@ -30,11 +30,14 @@ const msg = (id: string, content: string, at: string, runId: string | null = nul
   ({ id, thread_id: "t1", sender_actor_id: null, sender_kind: "bot", sender_name: "Bot", content, mentions: [], hop: 0, run_id: runId, metadata: {}, created_at: at });
 const run = (id: string, status: string): Run =>
   ({ id, actor_id: "b1", thread_id: "t1", status, interrupt: null, error: null, langsmith_run_id: null, created_at: "2026-01-01T00:00:00Z", started_at: null, finished_at: null });
+// What the backend says about r1; GET /threads/{id} lists it only while it is open.
+const runStatus: Record<string, string> = {};
+const OPEN = ["queued", "running", "waiting_human"];
 const detail = (id: string, messages: Message[], hasMore = false): ThreadDetail =>
   ({
     id, title: `title-${id}`, kind: "chat", created_by_actor_id: null, default_bot_actor_id: null, default_bot_handle: null,
     working_directory: null, external_ref: null, created_at: "", updated_at: "", last_message_at: null,
-    participants: [], messages, has_more: hasMore, runs: [run("r1", "running")], waiters: [],
+    participants: [], messages, has_more: hasMore, runs: OPEN.includes(runStatus.r1) ? [run("r1", runStatus.r1)] : [], waiters: [],
   }) as ThreadDetail;
 
 const m1 = msg("m1", "first reply", "2026-01-01T00:00:01Z", "r1");
@@ -91,6 +94,7 @@ describe("ThreadPage window re-entry", () => {
     Element.prototype.scrollTo = () => {};
     getThreadCalls = [];
     server = { t1: [m1], t2: [] };
+    runStatus.r1 = "running";
     fake.api.getThread = (id: string) => {
       getThreadCalls.push(id);
       return Promise.resolve(detail(id, [...(server[id] ?? [])])) as never;
@@ -98,7 +102,7 @@ describe("ThreadPage window re-entry", () => {
     fake.api.getThreadUsage = () => Promise.resolve({ model_calls: 0, prompt_tokens: 0, completion_tokens: 0, cache_read_tokens: 0 }) as never;
     fake.api.listBots = () => Promise.resolve([{ id: "b1", name: "Bot", icon: null } as unknown as Bot]) as never;
     fake.api.ackThread = () => Promise.resolve({ acked: 0 }) as never;
-    fake.api.getRun = (id: string) => Promise.resolve({ ...run(id, "running"), events: [] }) as never;
+    fake.api.getRun = (id: string) => Promise.resolve({ ...run(id, runStatus[id] ?? "running"), events: [] }) as never;
     qc = new QueryClient({ defaultOptions: { queries: { staleTime: 5_000, retry: false } } });
     el = document.createElement("div");
     document.body.appendChild(el);
@@ -193,5 +197,19 @@ describe("ThreadPage window re-entry", () => {
     await until(() => text().includes("only in t2"), "second thread history");
     expect(text()).not.toContain("first reply");
     expect(text()).not.toContain("echo preserved");
+  });
+
+  it("settles a run that finished while the page was away", async () => {
+    await mount("/threads/t1");
+    await until(() => text().includes("first reply") && text().includes("running"), "open run card");
+
+    // r1 finishes while another window is open, so its run.updated never reaches this page. Coming
+    // back restores the cached transcript, and the thread response no longer lists r1 at all.
+    await go("/other");
+    await until(() => text().includes("other window"), "switched away");
+    runStatus.r1 = "completed";
+    await go("/threads/t1");
+    await until(() => text().includes("completed"), "run card settled");
+    expect(text()).not.toContain("running");
   });
 });
