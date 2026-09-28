@@ -28,6 +28,10 @@ git diff --quiet && git diff --cached --quiet || die "tracked files have uncommi
 [[ "$(git symbolic-ref --quiet --short HEAD || true)" == main ]] || check "releases are cut from main"
 git fetch --quiet --tags origin main
 [[ "$(git rev-parse HEAD)" == "$(git rev-parse origin/main)" ]] || check "HEAD is not origin/main; pull or push first"
+# The next version is computed from the tags, so releasing an already released commit again would
+# publish the same build under a new number.
+RELEASED="$(git tag --points-at HEAD --list 'v*' | grep -E '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' | tr '\n' ' ' || true)"
+[[ -z "$RELEASED" ]] || check "HEAD is already released as ${RELEASED% }; commit something new before releasing again"
 
 VERSION="$(node frontend/scripts/version.cjs)"
 TAG="v$VERSION"
