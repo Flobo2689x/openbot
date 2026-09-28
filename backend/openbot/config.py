@@ -119,6 +119,9 @@ class Settings(BaseSettings):
             self.workspace_root = root
         if "database_url" not in self.model_fields_set:
             self.database_url = f"sqlite+aiosqlite:///{root / '.openbot' / 'openbot.db'}"
+        if "secret_key_file" not in self.model_fields_set:
+            # With the database it protects, and inside the state directory tools may not touch.
+            self.secret_key_file = root / ".openbot" / "secret.key"
         return self
 
 
