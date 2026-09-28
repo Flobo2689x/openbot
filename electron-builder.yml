@@ -24,6 +24,21 @@ extraResources:
       - "!logs/**"
       - "!openbot.db*"
       - "!openbot.langgraph.db*"
+      # Not needed at runtime: the test suite (with its fixtures) never runs in the app.
+      - "!tests"
+      - "!tests/**"
+      # `make electron-release` packages the working copy, so anything a backend started from
+      # backend/ left behind would ship too: its state directory (database with encrypted
+      # secrets), workspace, generated keys and local config.
+      - "!.openbot/**"
+      - "!workspace/**"
+      - "!secret.key"
+      - "!mcp_token.key"
+      - "!.env"
+      - "!.env.*"
+      - "!mcp.json"
+      - "!.coverage"
+      - "!htmlcov/**"
   - from: ../tools
     to: tools
 icon: electron/assets/icon.png

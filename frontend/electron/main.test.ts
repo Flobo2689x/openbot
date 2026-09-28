@@ -93,6 +93,12 @@ describe("Electron packaged startup", () => {
     expect(builderSource).toContain("to: backend");
   });
 
+  it("keeps tests and a developer's local state out of the bundled backend", () => {
+    for (const excluded of ["tests/**", ".openbot/**", "workspace/**", "secret.key", "mcp_token.key", ".env", "mcp.json"]) {
+      expect(builderSource).toContain(`- "!${excluded}"`);
+    }
+  });
+
   it("waits for backend health and terminates its process group", () => {
     expect(mainSource).toContain("/api/v1/health");
     expect(mainSource).toContain("process.kill(-backendProcess.pid, \"SIGTERM\")");
