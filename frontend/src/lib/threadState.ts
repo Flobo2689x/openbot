@@ -6,13 +6,34 @@ export const emptyThreadState = (threadId?: string): ThreadState => ({ threadId,
 
 const sortMsgs = (ms: Message[]) => [...ms].sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
 
+const OPEN_RUN_STATUSES = new Set(["queued", "running", "waiting_human"]);
+
 export function hydrate(state: ThreadState, detail: ThreadDetail): ThreadState {
   const byId = new Map(state.messages.map((m) => [m.id, m]));
   detail.messages.forEach((m) => byId.set(m.id, m));
   const runs = { ...state.runs };
-  detail.runs.forEach((r) => (runs[r.id] = r));
+  detail.runs.forEach((r) => {
+    // A finished run never reopens. A response fetched before it finished but delivered after its
+    // run.updated event must not roll the card back to running.
+    const known = runs[r.id];
+    if (known && !OPEN_RUN_STATUSES.has(known.status)) return;
+    runs[r.id] = r;
+  });
   // detail.waiters is optional so a page rendered against an older backend degrades to "no waiters".
   return { ...state, title: detail.title, messages: sortMsgs([...byId.values()]), runs, waiters: detail.waiters ?? [] };
+}
+
+/**
+ * Runs this page still shows as open that the thread response no longer lists. `GET /threads/{id}`
+ * returns every open run, so these finished while their run.updated event never reached the page
+ * (it was away, or the SSE socket was reconnecting). Their final state has to be fetched one by one;
+ * nothing else would ever correct them.
+ */
+export function missedRunEnds(state: ThreadState, detail: ThreadDetail): string[] {
+  const listed = new Set(detail.runs.map((r) => r.id));
+  return Object.values(state.runs)
+    .filter((r) => r.thread_id === detail.id && OPEN_RUN_STATUSES.has(r.status) && !listed.has(r.id))
+    .map((r) => r.id);
 }
 
 /**
