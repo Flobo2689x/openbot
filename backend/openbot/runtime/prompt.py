@@ -50,15 +50,26 @@ def build_history(messages: list[Message], actor_id: str, *, token_budget: int, 
 
 def build_system_prompt(*, bot: Actor, all_bots: list[Actor], participants: list[str], memories: list[str],
                         workspace_root: str, older_count: int, tool_names: list[str],
-                        default_bot_handle: str | None = None, scoped: bool = False) -> str:
+                        default_bot_handle: str | None = None, scoped: bool = False, cli: bool = False,
+                        cli_tools: bool = False) -> str:
     """`scoped` is the view a delegate gets: only the messages addressed to it and its own replies, with
     `older_count` other messages hidden. The default bot (or the only bot in a thread) sees the whole
-    thread, and `older_count` is then what fell outside the history budget."""
+    thread, and `older_count` is then what fell outside the history budget.
+
+    `cli` is the variant for a bot run by a coding agent CLI (runtime/cli_agent.py): it has the CLI's own
+    tools instead of OpenBot's, so nothing here may point it at ask_human or scheduling tools. `cli_tools` says whether
+    OpenBot's memory and history tools reach it over MCP (runtime/cli_mcp.py), under their mcp__openbot__ names."""
     roster = "\n".join(f"- @{b.handle} ({b.name}): {b.description or 'no description'}"
                        for b in all_bots
                        if b.kind == "bot" and b.enabled is not False and b.id != bot.id) or "- (no other bots)"
     mem = "\n".join(f"- {m}" for m in memories) or "- (none yet)"
-    if scoped:
+    if cli and cli_tools:
+        older = (f"{older_count} older messages of this thread are not shown. Use mcp__openbot__read_history "
+                 f"(chronological, by message id) to fetch them.") if older_count else "The full thread history is shown."
+    elif cli:
+        older = (f"{older_count} older messages of this thread are not shown and cannot be fetched in this mode. "
+                 f"If the message that woke you is not enough to act on, ask for what is missing.") if older_count else "The full thread history is shown."
+    elif scoped:
         older = (f"You see only the messages addressed to you (@{bot.handle}) and your own earlier replies in this thread; "
                  f"{older_count} other messages exist but are not shown. The message that woke you should contain everything "
                  f"you need. If it does not, use read_history (chronological, by message id) or recall_messages (semantic "
@@ -73,6 +84,26 @@ def build_system_prompt(*, bot: Actor, all_bots: list[Actor], participants: list
                     if default_bot_handle else "")
     lead_instructions = ("- you are the lead for this thread. When human talks to you, follow this process: 1. Understand the request. If it's a simple question, answer it. 2. If it's a task request, plan the task execution. 3. Your plan must include which bots will be called, and in which order. 4. Call the next bot with comprehensive instructions. 5. When a bot does a handoff to you, understand where you are in task execution, and either handoff to the next bot, or reply to human. 6. When the task is complete, reply to human.\n"
                          if default_bot_handle and bot.handle == default_bot_handle else "")
+    sign_note = f"""- When adding a note, comment, or edit on a third-party system (GitHub, Linear, etc.), sign it as "OpenBot - `@{bot.handle}`" (backticks included) -- wrapping the handle like that keeps it from tagging an unrelated user of the same name on that system."""
+    cli_memory_note = ("- Long-term memory: use mcp__openbot__manage_memory to store durable facts, preferences and decisions, "
+                       "and mcp__openbot__search_memory to look them up. Relevant memories are listed below."
+                       if cli_tools else "- Relevant long-term memories are listed below.")
+    if cli:
+        tool_notes = f"""- Delegation happens here, in this thread: to hand work to another bot, write the task in your reply and @mention it. There is no way to start a separate thread; everything stays in this one conversation. You cannot pause mid-run for a human: to ask the human something, reply to them with the question and no bot mention.
+- You run as a coding agent CLI with its own tools. Only your final message is posted to the thread, so put the whole reply there; text between tool calls shows in the run log only. Tools your permission settings do not allow are denied; if one is denied, adjust your plan and explain.
+{sign_note}
+{cli_memory_note}
+- {older}
+- Your working directory in this thread is {workspace_root}."""
+    else:
+        tool_notes = f"""- Delegation happens here, in this thread: to hand work to another bot, write the task in your reply and @mention it. There is no way to start a separate thread; everything stays in this one conversation. To wait for a human decision, call ask_human; you will pause until they answer.
+- Use schedule_message to have a message sent to yourself or another bot in this thread after a delay (e.g. "check back on this in 10 minutes"). The thread is considered active for as long as it has a message scheduled against it.
+- Some tools may require human approval before they execute; if a tool is rejected, adjust your plan and explain.
+{sign_note}
+- Long-term memory: use manage_memory to store durable facts, preferences and decisions, and search_memory to look them up. Relevant memories are listed below.
+- {older}
+- The current directory/root for shell and file tools in this thread is {workspace_root}. Paths are relative to it.
+- Tools available to you: {', '.join(tool_names) or 'none besides the built-ins'}."""
     return f"""You are {bot.name} (@{bot.handle}), a persistent AI bot on the OpenBot platform.
 {bot.description}
 
@@ -84,14 +115,7 @@ def build_system_prompt(*, bot: Actor, all_bots: list[Actor], participants: list
 - Your reply is posted to the thread as a message from you. To hand work to another bot or ask it something, mention it with @handle in your reply. Only mentioned bots are woken up by bot messages; unmentioned human messages go to the thread default bot.{default_note} Never mention yourself. Only write @handle when you want that bot to act now. When merely referring to a bot, use its plain name without @. Hand off to one bot at a time: only the first @handle in your reply wakes a bot, so name the bot that must act next and describe any later steps without @.
 - End every reply with a handoff to whoever should act next: start a line with their handle, e.g. "@bob - over to you, do this and that." This applies even when you are replying to another bot -- if @engineer asks you a question, answer it and still open with "@engineer - ...". The only exception is the thread lead{lead_note} deciding the thread is done, or that it needs the human: reply to the human with no bot mention, and the thread stays put until they speak again. If you are ever unsure who should act next, hand off to the thread lead{lead_note} instead of guessing. Never hand off to yourself.
 {lead_instructions}- If newer messages for you arrived while you were working, a reply that mentions another bot does not wake it: the platform posts a notice, and delivers those messages to you next. Handle them first (later messages take priority over earlier ones). You do not need to remember to re-mention the held bot: the platform delivers your original request to it automatically, using exactly what you already wrote, as soon as you have nothing else queued here -- whether or not your later reply mentions it again. So if a later message turns out to already be covered by what you already said, just say so in one short sentence and stop; you do not have to re-open the hand-off yourself, and if you do have something new to add, mentioning the bot again simply replaces the automatic delivery with your fresher message.
-- Delegation happens here, in this thread: to hand work to another bot, write the task in your reply and @mention it. There is no way to start a separate thread; everything stays in this one conversation. To wait for a human decision, call ask_human; you will pause until they answer.
-- Use schedule_message to have a message sent to yourself or another bot in this thread after a delay (e.g. "check back on this in 10 minutes"). The thread is considered active for as long as it has a message scheduled against it.
-- Some tools may require human approval before they execute; if a tool is rejected, adjust your plan and explain.
-- When adding a note, comment, or edit on a third-party system (GitHub, Linear, etc.), sign it as "OpenBot - `@{bot.handle}`" (backticks included) -- wrapping the handle like that keeps it from tagging an unrelated user of the same name on that system.
-- Long-term memory: use manage_memory to store durable facts, preferences and decisions, and search_memory to look them up. Relevant memories are listed below.
-- {older}
-- The current directory/root for shell and file tools in this thread is {workspace_root}. Paths are relative to it.
-- Tools available to you: {', '.join(tool_names) or 'none besides the built-ins'}.
+{tool_notes}
 
 # Other bots you can mention
 {roster}

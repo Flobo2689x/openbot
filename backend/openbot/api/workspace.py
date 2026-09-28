@@ -4,8 +4,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from openbot.api.deps import get_services
 from openbot.api.schemas import DirectoryEntryOut, DirectoryListingOut
+from openbot.runtime.worktrees import repo_root
 from openbot.services import Services
-from openbot.tools.builtin.workspace import browse_workspace_directory
+from openbot.tools.builtin.workspace import browse_workspace_directory, thread_workspace_root
 
 router = APIRouter(prefix="/workspace", tags=["workspace"])
 
@@ -20,4 +21,6 @@ async def list_directories(path: str = Query(".", description="Directory path (r
         here, parent, entries = browse_workspace_directory(services.settings.workspace_root, path)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
-    return DirectoryListingOut(path=here, parent=parent, entries=[DirectoryEntryOut(name=n, path=p) for n, p in entries])
+    in_repo = await repo_root(thread_workspace_root(services.settings.workspace_root, None if here == "." else here)) is not None
+    return DirectoryListingOut(path=here, parent=parent, entries=[DirectoryEntryOut(name=n, path=p) for n, p in entries],
+                               in_git_repo=in_repo)

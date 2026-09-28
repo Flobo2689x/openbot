@@ -30,16 +30,20 @@ def _fmt(m: Message) -> str:
     return f"[{m.id}] {m.created_at.isoformat(timespec='seconds')} [{m.sender_name}]: {m.content}"
 
 
-@tool
-async def read_history(runtime: ToolRuntime[RunContext], before_message_id: str | None = None, limit: int = 20) -> str:
-    """Read older messages of the current thread chronologically."""
-    ctx = runtime.context
-    async with ctx.services.session_factory() as s:
-        q = select(Message).where(Message.thread_id == ctx.thread_id)
+async def thread_history(services, thread_id: str, before_message_id: str | None = None, limit: int = 20) -> str:
+    """Messages of one thread, oldest first; also serves claude-code bots through runtime/cli_mcp.py."""
+    async with services.session_factory() as s:
+        q = select(Message).where(Message.thread_id == thread_id)
         if before_message_id and (anchor := await s.get(Message, before_message_id)):
             q = q.where(Message.created_at < anchor.created_at)
         rows = (await s.execute(q.order_by(Message.created_at.desc()).limit(limit))).scalars().all()
     return "\n".join(_fmt(m) for m in reversed(rows)) or "(no messages)"
+
+
+@tool
+async def read_history(runtime: ToolRuntime[RunContext], before_message_id: str | None = None, limit: int = 20) -> str:
+    """Read older messages of the current thread chronologically."""
+    return await thread_history(runtime.context.services, runtime.context.thread_id, before_message_id, limit)
 
 
 @tool

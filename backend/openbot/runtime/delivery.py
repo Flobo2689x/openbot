@@ -16,6 +16,7 @@ from openbot.db.models import (
     Run,
     Thread,
     ThreadParticipant,
+    new_id,
     now_local,
     utcnow,
 )
@@ -23,6 +24,7 @@ from openbot.runtime import activity, memory
 from openbot.runtime.renaming import maybe_auto_rename
 from openbot.runtime.router import parse_mentions, resolve_targets
 from openbot.runtime.waiters import publish_waiters
+from openbot.runtime.worktrees import WorktreeError, create_worktree, working_directory_of
 from openbot.tools.builtin.workspace import thread_workspace_root, validate_workspace_directory
 
 log = logging.getLogger(__name__)
@@ -106,7 +108,7 @@ def _system_notice(thread_id: str, content: str, *, created_at, mentions: list[s
 async def create_thread(services, session: AsyncSession, *, title: str, handles: list[str], created_by: Actor | None,
                         external_ref: str | None = None, include_human: bool = True,
                         default_bot_handle: str | None = None, working_directory: str | None = None,
-                        kind: str = "chat") -> Thread:
+                        kind: str = "chat", isolated_worktree: bool = False) -> Thread:
     by_handle = await _actors_by_handle(session)
     unknown = [h for h in handles if h not in by_handle]
     if unknown:
@@ -128,9 +130,19 @@ async def create_thread(services, session: AsyncSession, *, title: str, handles:
     if effective_title is None:
         effective_title = generate_thread_title()
 
-    thread = Thread(title=effective_title, kind=kind, created_by_actor_id=created_by.id if created_by else None,
+    thread_id, worktree = new_id(), None
+    if isolated_worktree:
+        # Made before the row, so a failure leaves no thread behind; the thread then works in the worktree.
+        origin = thread_workspace_root(services.settings.workspace_root, normalized_working_directory)
+        try:
+            worktree = await create_worktree(services.settings, origin, thread_id)
+        except WorktreeError as e:
+            raise ValueError(str(e)) from e
+        worktree["origin"] = normalized_working_directory
+        normalized_working_directory = working_directory_of(worktree)
+    thread = Thread(id=thread_id, title=effective_title, kind=kind, created_by_actor_id=created_by.id if created_by else None,
                     default_bot_actor_id=default_bot.id if default_bot else None,
-                    working_directory=normalized_working_directory, external_ref=external_ref)
+                    working_directory=normalized_working_directory, external_ref=external_ref, worktree=worktree)
     session.add(thread)
     await session.flush()
     log.info("thread %s created: title=%r handles=%s default_bot=%s working_directory=%s tool_root=%s",
@@ -150,6 +162,10 @@ async def create_thread(services, session: AsyncSession, *, title: str, handles:
                           summary=f"thread {effective_title!r} created by @{created_by.handle if created_by else 'system'}",
                           kind=kind, handles=list(handles), default_bot=effective_default if default_bot else None,
                           working_directory=normalized_working_directory)
+    if worktree is not None:
+        await activity.record(services, "thread.worktree_created", thread_id=thread.id,
+                              summary=f"isolated worktree {worktree['path']} on {worktree['branch']}",
+                              **{k: worktree[k] for k in ("repo", "path", "branch", "base_ref", "base_commit")})
     return thread
 
 

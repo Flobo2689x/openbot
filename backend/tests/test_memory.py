@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from langchain_core.messages import HumanMessage
 from langgraph.store.memory import InMemoryStore
 
-from openbot.db.models import Actor, Message
+from openbot.db.models import Actor, BotProfile, Message
 from openbot.runtime.memory import (
     MemoryReflector,
     ReflectionMemoryStore,
@@ -165,6 +165,30 @@ async def test_reflection_and_memory_tool_are_told_memory_is_bot_scoped(monkeypa
     assert "thread" in captured["instructions"].lower() and "never" in captured["instructions"].lower()
     manage = memory_tools("b1", InMemoryStore())[0]
     assert "thread" in manage.description.lower()
+
+
+async def test_reflection_fails_silently_with_no_provider_configured(caplog):
+    """Same case as renaming's equivalent test: a claude-code-only install has nothing for an "auto"
+    bot's background memory extraction to fall back to. make_manager's model_factory(bot) call must
+    raise inside the reflector's own try/except, never past _reflect."""
+    import logging
+
+    from openbot.config import Settings
+    from openbot.runtime.providers import chat_model
+
+    settings = Settings(openai_api_key=None, anthropic_api_key=None, openrouter_api_key=None, xai_api_key=None,
+                        ollama_base_url=None, _env_file=None)
+
+    class Svc:
+        store = InMemoryStore()
+        model_factory = staticmethod(lambda actor: chat_model(actor.bot, settings))
+
+    bot = Actor(id="b1", kind="bot", handle="b", name="B", bot=BotProfile(provider="auto", model=""))
+    r = MemoryReflector(Svc(), delay=0.01)
+    caplog.set_level(logging.ERROR)
+    r.schedule(bot, [HumanMessage("remember this")], thread_id="t1")
+    await r.flush()
+    assert any("memory reflection failed" in rec.message for rec in caplog.records)
 
 
 async def test_reflection_bounds_the_extractor_loop():

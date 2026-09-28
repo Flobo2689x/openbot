@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { Api, type AttachmentIn } from "../api/client";
-import type { ThreadDetail } from "../api/types";
+import type { ThreadDetail, WorktreeStatus } from "../api/types";
 import { isBackendUnavailable } from "../api/errors";
 import { useBusEvents } from "../api/sse";
 import Composer from "../components/Composer";
@@ -13,6 +13,7 @@ import { ChevronLeftIcon, MoreIcon } from "../components/icons";
 import { isNearBottom, scrollToBottom } from "../lib/autoScroll";
 import { emptyThreadState, hydrate, mergeRun, missedRunEnds, reduceThreadEvent, type ThreadState } from "../lib/threadState";
 import { threadUsageLabel } from "../lib/threadUsage";
+import { discardConfirmText, lossText, worktreeConflict } from "../lib/worktree";
 import { setOpenBotTitle } from "../lib/documentTitle";
 
 export default function ThreadPage() {
@@ -118,7 +119,27 @@ export default function ThreadPage() {
     mutationFn: () => Api.getThread(id, state.messages[0].id),
     onSuccess: (older) => { setState((s) => hydrate(s, older)); setHasMore(older.has_more); },
   });
-  const del = useMutation({ mutationFn: () => Api.deleteThread(id), onSuccess: () => { qc.invalidateQueries({ queryKey: ["threads"] }); nav("/threads"); } });
+  // Deleting a thread takes its isolated worktree along only when nothing would be lost; otherwise the
+  // server answers 409 with what would be, and the reader decides here (keep it, or discard on purpose).
+  const [worktreeBlock, setWorktreeBlock] = useState<WorktreeStatus | null>(null);
+  const leave = () => { qc.invalidateQueries({ queryKey: ["threads"] }); nav("/threads"); };
+  const del = useMutation({
+    mutationFn: (opts: { keepWorktree?: boolean }) => Api.deleteThread(id, opts),
+    onSuccess: leave,
+    onError: (e) => { const c = worktreeConflict(e); if (c) setWorktreeBlock(c.worktree); },
+  });
+  const discardAndDelete = useMutation({
+    mutationFn: async () => { await Api.deleteWorktree(id, true); await Api.deleteThread(id); },
+    onSuccess: leave,
+  });
+  const removeWorktree = useMutation({
+    mutationFn: async () => {
+      const status = await Api.getWorktree(id);
+      if (!window.confirm(discardConfirmText(status))) return;
+      await Api.deleteWorktree(id, !status.clean);
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["thread", id] }),
+  });
   const updateDefault = useSaveMutation({
     mutationFn: (default_bot_handle: string) => Api.updateThread(id, { default_bot_handle }),
     onSuccess: () => {
@@ -187,6 +208,7 @@ export default function ThreadPage() {
           <p className="flex flex-wrap items-baseline gap-x-3 text-[11px] leading-4 text-muted">
             <span className="truncate">{t.participants.map((p) => `@${p.handle}`).join(" ")}</span>
             <span className="truncate"><span className="text-faint">cwd </span>{t.working_directory ?? "."}</span>
+            {t.worktree && <span className="truncate" title={`Isolated worktree at ${t.worktree.path}, from ${t.worktree.base_ref ?? t.worktree.base_commit.slice(0, 12)}`}><span className="text-faint">worktree </span>{t.worktree.branch}</span>}
             {usageLine && <span className="truncate" title="Tokens across every run in this thread">{usageLine}</span>}
           </p>
         </div>
@@ -201,10 +223,23 @@ export default function ThreadPage() {
             <label className="flex items-center justify-between gap-3 px-3 py-2 text-[13px] sm:hidden">Default bot
               {defaultSelect("h-8 max-w-32 px-1.5")}
             </label>
-            <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); if (window.confirm("Delete thread?")) del.mutate(); }} className="h-9 w-full rounded-ui px-3 text-left text-[13px] text-danger hover:bg-danger/10">Delete thread</button>
+            {t.worktree && <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); removeWorktree.mutate(); }} className="h-9 w-full rounded-ui px-3 text-left text-[13px] text-fg hover:bg-sunken">Remove worktree…</button>}
+            <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); if (window.confirm("Delete thread?")) del.mutate({}); }} className="h-9 w-full rounded-ui px-3 text-left text-[13px] text-danger hover:bg-danger/10">Delete thread</button>
           </div>}
         </div>
       </header>
+      {worktreeBlock && (
+        <div role="alert" className="mt-2 space-y-2 rounded-ui border border-warn/40 border-l-2 border-l-warn bg-warn/[0.06] px-3 py-2 text-xs text-fg">
+          <p>The thread was not deleted: its worktree at <span className="font-mono">{worktreeBlock.path}</span> has {lossText(worktreeBlock)}. Push the branch first, or choose:</p>
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" variant="secondary" onClick={() => del.mutate({ keepWorktree: true })} disabled={del.isPending}>Delete thread, keep worktree</Button>
+            <Button size="sm" variant="danger" onClick={() => { if (window.confirm(discardConfirmText(worktreeBlock))) discardAndDelete.mutate(); }} disabled={discardAndDelete.isPending}>Discard worktree and delete thread</Button>
+            <Button size="sm" variant="secondary" onClick={() => setWorktreeBlock(null)}>Cancel</Button>
+          </div>
+          <ErrorText error={discardAndDelete.error} />
+        </div>
+      )}
+      <ErrorText error={removeWorktree.error ?? (worktreeConflict(del.error) ? null : del.error)} />
       {/* The thinking placeholder is rendered inline in MessageList, not as a separate banner. */}
       <div ref={scrollContainer} onScroll={updateScrollStickiness} className="scrollbar-subtle flex-1 overflow-y-auto py-5">
         {hasMore && state.messages.length > 0 && (

@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from openbot.api.actors import handle_taken
 from openbot.api.deps import get_services, get_session
 from openbot.api.schemas import (
+    MODEL_OPTIONAL,
     BotCreate,
     BotInboxItemOut,
     BotOut,
@@ -29,6 +30,8 @@ from openbot.db.models import (
     Thread,
 )
 from openbot.runtime import memory
+from openbot.runtime.cli_agent import CLAUDE_CODE
+from openbot.runtime.cli_agent import settings_error as cli_settings_error
 from openbot.runtime.delivery import create_thread, human_actor, post_message
 from openbot.services import Services
 
@@ -46,9 +49,13 @@ def _validate_tools(services: Services, tool_names: list[str], approval_tools: l
         raise HTTPException(422, f"approval_tools must be a subset of tool_names: {extra}")
 
 
-def _validate_model(provider: str, model: str) -> None:
-    if provider != "auto" and not model:
-        raise HTTPException(422, 'model is required unless provider is "auto"')
+def _validate_model(provider: str, model: str, model_settings: dict | None = None) -> None:
+    if provider not in MODEL_OPTIONAL and not model:
+        raise HTTPException(422, 'model is required unless provider is "auto" or "claude-code"')
+    if provider == CLAUDE_CODE:
+        error = cli_settings_error(model, model_settings)
+        if error:
+            raise HTTPException(422, error)
 
 
 async def _get_bot_or_404(session: AsyncSession, bot_id: str) -> Actor:
@@ -69,6 +76,7 @@ async def list_bots(session: AsyncSession = Depends(get_session)):
 async def create_bot(body: BotCreate, session: AsyncSession = Depends(get_session),
                      services: Services = Depends(get_services)):
     _validate_tools(services, body.tool_names, body.approval_tools)
+    _validate_model(body.provider, body.model, body.model_settings)
     if await handle_taken(session, body.handle):
         raise HTTPException(409, "handle already exists")
     data = body.model_dump()
@@ -92,7 +100,8 @@ async def update_bot(bot_id: str, body: BotUpdate, session: AsyncSession = Depen
     actor = await _get_bot_or_404(session, bot_id)
     data = body.model_dump(exclude_unset=True)
     _validate_tools(services, data.get("tool_names", actor.bot.tool_names), data.get("approval_tools", actor.bot.approval_tools))
-    _validate_model(data.get("provider", actor.bot.provider), data.get("model", actor.bot.model))
+    _validate_model(data.get("provider", actor.bot.provider), data.get("model", actor.bot.model),
+                    data.get("model_settings", actor.bot.model_settings))
     if "handle" in data and data["handle"] != actor.handle and await handle_taken(session, data["handle"]):
         raise HTTPException(409, "handle already exists")
     for k, v in data.items():

@@ -7,6 +7,7 @@ from sqlalchemy.exc import IntegrityError
 
 from openbot.db.models import Actor, AppSetting, BotProfile, utcnow
 from openbot.runtime.app_settings import SETUP_COMPLETED_KEY
+from openbot.runtime.cli_agent import CLAUDE_CODE, find_claude
 from openbot.runtime.providers import default_provider
 
 log = logging.getLogger(__name__)
@@ -145,9 +146,31 @@ then call ask_human to request permission to merge (include the PR link and test
     },
 ]
 
+# Per-demo-bot claude-code model_settings override (permission_mode, allowed_tools, ...), keyed by
+# handle. Merged over each spec's own model_settings in both seed_demo_bots and sync_demo_bots, so a
+# later change to loosen one demo bot's permissions is exactly one entry here -- nothing else to touch.
+# Empty for every bot for now: they start on the conservative default (dontAsk) like any other
+# claude-code bot, pending an explicit decision on what engineer/reviewer/qa actually need.
+CLAUDE_CODE_MODEL_SETTINGS: dict[str, dict] = {
+    "chief_of_staff": {},
+    "engineer": {},
+    "reviewer": {},
+    "qa": {},
+}
+
+
+def _use_claude_code(settings) -> bool:
+    """The demo team seeds on the claude-code provider only when no API provider is configured at all
+    (an API key always wins, same priority as "auto" bots) and the operator explicitly chose Claude
+    Code (see config.claude_code_selected) with the CLI actually present."""
+    return (default_provider(settings) is None and settings.claude_code_selected
+            and find_claude(settings) is not None)
+
 
 async def seed_demo_bots(services) -> int:
-    if default_provider(services.settings) is None:
+    settings = services.settings
+    use_claude_code = _use_claude_code(settings)
+    if default_provider(settings) is None and not use_claude_code:
         log.info("no provider configured; skipping demo bot seed")
         return 0
     async with services.session_factory() as session:
@@ -155,12 +178,16 @@ async def seed_demo_bots(services) -> int:
         if (await session.execute(select(Actor.id).where(Actor.kind == "bot").limit(1))).first():
             return 0
         for spec in DEMO_BOTS:
-            # provider "auto" (the default) means each bot always uses whichever provider is
-            # configured, so the demo team keeps working as keys are added, removed, or changed.
+            if use_claude_code:
+                provider, model = CLAUDE_CODE, settings.claude_code_model
+                model_settings = {**spec.get("model_settings", {}), **CLAUDE_CODE_MODEL_SETTINGS.get(spec["handle"], {})}
+            else:
+                # provider "auto" (the default) means each bot always uses whichever provider is
+                # configured, so the demo team keeps working as keys are added, removed, or changed.
+                provider, model, model_settings = "auto", "", dict(spec.get("model_settings", {}))
             session.add(Actor(kind="bot", handle=spec["handle"], name=spec["name"], description=spec["description"],
-                              bot=BotProfile(provider="auto", model="", instructions=spec["instructions"],
-                                             icon=spec["icon"],
-                                             model_settings=dict(spec.get("model_settings", {})),
+                              bot=BotProfile(provider=provider, model=model, instructions=spec["instructions"],
+                                             icon=spec["icon"], model_settings=model_settings,
                                              tool_names=spec["tool_names"], approval_tools=spec["approval_tools"])))
         try:
             await session.commit()
@@ -178,7 +205,7 @@ async def seed_demo_bots(services) -> int:
                 await session.commit()
             except IntegrityError:
                 await session.rollback()
-    log.info("seeded %d demo bots using auto provider selection", len(DEMO_BOTS))
+    log.info("seeded %d demo bots using %s provider selection", len(DEMO_BOTS), CLAUDE_CODE if use_claude_code else "auto")
     return len(DEMO_BOTS)
 
 
@@ -201,7 +228,13 @@ async def sync_demo_bots(services) -> int:
                 continue
             actor.name, actor.description = spec["name"], spec["description"]
             for field in SYNCED_FIELDS:
-                setattr(actor.bot, field, spec.get(field, {} if field == "model_settings" else []))
+                if field != "model_settings":
+                    setattr(actor.bot, field, spec.get(field, []))
+                    continue
+                model_settings = dict(spec.get("model_settings", {}))
+                if actor.bot.provider == CLAUDE_CODE:
+                    model_settings = {**model_settings, **CLAUDE_CODE_MODEL_SETTINGS.get(spec["handle"], {})}
+                actor.bot.model_settings = model_settings
             n += 1
         await session.commit()
     log.info("synced %d demo bots from the seed definitions", n)

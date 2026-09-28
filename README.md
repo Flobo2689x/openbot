@@ -327,6 +327,25 @@ For how these pieces fit together inside the backend, see [docs/architecture.md]
   frontend uses it. Query strings routinely end up in reverse-proxy access logs, browser history
   and `Referer` headers — treat `OPENBOT_API_KEY` as a low-assurance secret, not a real
   credential, and rotate it if such logs are shared.
+- **A Claude Code bot is at least as powerful as `run_shell`.** A bot on the `claude-code` provider
+  runs the local `claude` CLI in the thread working directory as the server user. Its tools are not
+  confined to that directory, and what it may do is decided by the CLI's permission mode and allowed
+  tools, which replace OpenBot's per-tool approvals for that bot. The default mode (`dontAsk`)
+  denies anything that would need approval instead of asking: reading files, read-only commands and
+  whatever the bot's allowed tools pre-approve still run, everything else is refused.
+  `claude -p` shows no trust dialog, so on its own it would run hooks from the directory's
+  `.claude/settings.json` and connect the servers in its `.mcp.json` without asking. OpenBot
+  therefore starts it with `--setting-sources user`: only your own Claude Code settings apply, and
+  the directory's settings, hooks and `.mcp.json` are ignored. Its `CLAUDE.md` still reaches the bot:
+  OpenBot reads it itself (the working directory up to the repository root, `@` imports only from
+  inside the repository, no symlinks out of it, size-capped) and adds it to the system prompt. Turning
+  on "Use this directory's Claude Code settings" for a bot hands all of it to the CLI instead; do that
+  only for repositories you trust. OpenBot never reads the CLI's credentials. It does not pass its own keys and settings
+  (`SECRET_KEY`, `OPENBOT_API_KEY`, provider and Telegram keys) to the CLI, with one exception:
+  `ANTHROPIC_API_KEY` is passed on, because it may be how you set up the CLI. If it is set, the CLI
+  bills that key instead of your subscription; the run's activity log shows which one applies. The
+  memory and history tools OpenBot gives such a bot listen only on `127.0.0.1` and accept only the
+  current run's token, which reaches that one bot's memory and that one thread.
 - **Prompt injection is a live path to all of the above.** A bot that reads a web page, a PR diff,
   or a message from an external actor can be instructed by that content. With `run_shell` enabled
   this is remote code execution. Give each bot the smallest tool set that does its job, use the
@@ -401,6 +420,99 @@ which defaults to `WORKSPACE_ROOT` and can be set to an existing relative subdir
 thread is created. `run_shell` starts in that directory but is otherwise unrestricted, and
 `http_request`/`fetch_url` can reach any URL. Read [Trust model / security](#trust-model--security)
 before giving a bot these tools.
+
+### Claude Code bots
+
+A bot can run its turns through a local [Claude Code](https://code.claude.com) install instead of an
+OpenBot-managed model, which uses your Claude subscription (or whatever login the CLI has) rather than a
+per-token API key:
+
+1. Install Claude Code (2.1.210 or later) on the machine that runs the OpenBot backend and log in once in a terminal
+   (`claude`, then `/login`). OpenBot looks for `claude` on `PATH` and in the usual install locations
+   (`~/.local/bin`, `~/.claude/local`, npm's global bin, Homebrew); set `CLAUDE_CODE_PATH` to use
+   another one. Restart OpenBot after installing.
+2. In the bot editor, pick **Claude Code CLI (local)** as the provider. The option only appears once
+   `claude` is found. Pick a model from the dropdown (`sonnet`, `opus`, `haiku`, or **Custom…** for
+   any other id), or leave it on **CLI default**.
+3. Choose the permissions: no prompts (`dontAsk`, the default: reads and allowed tools only), edit files (`acceptEdits`) or `auto`,
+   plus optional allowed-tool rules such as `Read, Edit, Bash(git diff *)`. By default the thread
+   directory's own Claude Code settings, hooks and `.mcp.json` are ignored (see the trust note);
+   "Use this directory's Claude Code settings" turns them on for that bot. The project's `CLAUDE.md`
+   (or `AGENTS.md`) is read by OpenBot and added to the bot's prompt either way, unless you turn off
+   "Include the project's CLAUDE.md" (`model_settings.project_instructions`). `CLAUDE.local.md` and
+   `.claude/rules` are not included.
+
+Each run starts `claude -p --output-format stream-json` in the thread working directory. Its text and
+tool calls stream into the run card, its final message is posted as the bot's reply (so `@mention`
+hand-offs work in both directions), and its usage counts toward the run and thread totals. The next
+turn in the same thread resumes the same Claude session. Cancelling a run stops the CLI and everything
+it started; a run is also stopped after `CLAUDE_CODE_TIMEOUT` seconds (default 1800, per bot
+`model_settings.timeout_seconds`).
+
+Of OpenBot's own tools, such a bot gets its long-term memory (`manage_memory`, `search_memory`, the same
+memories the bot would have on any other provider) and the thread's history (`read_history`), as
+`mcp__openbot__*` tools. OpenBot serves them from a separate listener on `127.0.0.1` (a port the OS
+picks, only the `/mcp` path, no access log), and each run gets its own token, passed in a temporary
+`--mcp-config` file and revoked when the run ends; the tools take the bot and thread from that token,
+so a run reaches only its own bot's memory and its own thread. Turn this off per bot with "OpenBot
+memory and thread history" (`model_settings.openbot_tools`). `ask_human`, scheduling and the MCP
+servers configured in OpenBot are not available to a claude-code bot. After a run, background memory
+extraction works as for other bots when a regular chat provider is configured, and is skipped without
+one. Read the trust note in [Trust model / security](#trust-model--security) first.
+
+#### Cutting the token cost of Claude Code bots
+
+Two independent things drive up a claude-code bot's token use well beyond what a trivial request needs,
+both because the bot's context ends up carrying more than OpenBot itself put there:
+
+- **Your own Claude Code setup loads too**, even with the project's own settings kept out (see the trust
+  note above): your personal skills, agents and MCP servers still count toward every prompt, because
+  `--setting-sources user` keeps *your* user-level configuration, not none at all. Turn on **Isolated
+  Claude Code profile** in Settings -> Providers to give claude-code bots their own `CLAUDE_CONFIG_DIR`
+  instead of yours, so none of that loads for them. It needs a one-time separate login: once it's on,
+  Settings shows the exact command (with the `claude` path OpenBot itself found, since it usually isn't
+  on `PATH`) and a "Check again" button that asks only `claude auth status`, never a file, whether it
+  worked. Off by default; turning it on changes nothing else about how the bot behaves.
+- **Every built-in tool's schema loads too**, whether or not the bot's permissions let it call the tool.
+  For any claude-code bot still on the default `dontAsk` mode with no `allowed_tools` of its own, OpenBot
+  drops the schemas of `Edit`, `Write`, `NotebookEdit` and `WebSearch` -- the only built-in tools `dontAsk`
+  denies unconditionally, unlike `Bash` (its read-only commands still run) and `WebFetch` (preapproved
+  documentation domains still run). This changes nothing a bot could actually do; it only stops paying for
+  tools it could never have called. A bot with its own `allowed_tools`, or on any other permission mode,
+  is untouched. OpenBot's own `mcp__openbot__*` tools are never affected either way.
+
+#### Starting a fresh install on Claude Code alone
+
+The first-run setup wizard offers **Claude Code (local CLI)** as a chat provider choice, next to
+OpenRouter, OpenAI, Anthropic, xAI and Ollama -- only once `claude` is found, and only when you pick it
+explicitly: the CLI simply being installed (many people have it for their own work, unrelated to
+OpenBot) is never enough on its own to complete setup or start real bot runs. Picking it asks for a
+model (default `sonnet`) and nothing else -- no key, no URL. Finishing the wizard this way seeds the
+demo team (chief_of_staff, engineer, reviewer, qa) on the `claude-code` provider with that model and
+the exact same instructions the ordinary demo team has; only their provider/model differ. Every one of
+them starts on `dontAsk` with no allowed tools, the conservative default -- read-only in practice, so the demo
+team can look at the repository but not change or run anything until you widen a bot's permissions
+yourself in its editor (see [Claude Code bots](#claude-code-bots) above). Background thread-renaming
+and memory extraction, which need a regular chat model, quietly do nothing without one (logged, never
+shown as an error) until an API key is added.
+
+### Isolated worktrees per thread
+
+When a thread's working directory is inside a git repository, the new-thread form offers **Isolated git
+worktree**. The thread then gets its own checkout of the repository on a new branch `openbot/<first 8
+characters of the thread id>`, made from the commit the repository has checked out, so several threads
+(and their bots) can work in the same repository at the same time without stepping on each other.
+Every bot in the thread works there: `run_shell`, the file tools and Claude Code bots alike.
+
+The worktree lives outside the repository, in `WORKTREES_DIR` (default `%LOCALAPPDATA%\OpenBot\wt` on
+Windows, `$XDG_DATA_HOME/openbot/wt` or `~/.local/share/openbot/wt` elsewhere), under a short name, for
+Windows path limits. Deleting the thread removes the worktree and its branch only when nothing would be
+lost: no uncommitted changes and no commit that exists nowhere else (base commit, another branch, a
+remote). Otherwise the thread is not deleted and OpenBot says what is left; push the branch, keep the
+worktree and delete only the thread, or discard it after a confirmation that names what goes. Purging a
+bot never touches worktrees. The API is `isolated_worktree` on `POST /threads`,
+`GET /threads/{id}/worktree`, `DELETE /threads/{id}/worktree[?discard=true]` and
+`DELETE /threads/{id}?keep_worktree=true`.
 
 ## External actors and webhooks
 
@@ -525,6 +637,9 @@ as `model_settings.reasoning_effort`). It applies to OpenAI, xAI, OpenRouter and
 | `CORS_ORIGINS` | `http://localhost:5173` | Comma-separated list of allowed origins. |
 | `WORKSPACE_ROOT` | `./workspace` | Default thread working directory and the confinement root for file tools. `run_shell` only *starts* there. |
 | `TOOLS_DIR` | `./tools` | Directory of plugin tool modules, loaded at startup. |
+| `CLAUDE_CODE_PATH` | *(unset)* | The `claude` executable for [Claude Code bots](#claude-code-bots). Unset: `PATH`, then the usual install locations. |
+| `CLAUDE_CODE_TIMEOUT` | `1800` | Seconds before a Claude Code bot's run is stopped. |
+| `WORKTREES_DIR` | *(per-user)* | Where [isolated thread worktrees](#isolated-worktrees-per-thread) live. Unset: `%LOCALAPPDATA%\OpenBot\wt` on Windows, `$XDG_DATA_HOME/openbot/wt` or `~/.local/share/openbot/wt` elsewhere. Never inside the repository. |
 | `FRONTEND_DIST` | `frontend/dist` | Built frontend served at `/` when it exists. Empty means this default. |
 | `MCP_CONFIG` | `./mcp.json` | Optional `mcpServers` file imported into the database once at startup, then ignored. See [MCP servers](#mcp-servers). |
 | `MAX_CONCURRENT_RUNS` | `4` | Global cap on simultaneous bot runs (the semaphore is created at startup). |
@@ -549,6 +664,8 @@ name, if set, is the default the page shows and the value a reset returns to.
 |---|---|---|
 | Providers | `openrouter_api_key`, `openai_api_key`, `anthropic_api_key`, `xai_api_key` | Enable the respective provider. Secret: encrypted at rest, masked in the API. |
 | Providers | `ollama_base_url`, `ollama_model` | A local Ollama server (e.g. `http://localhost:11434`) enables the `ollama` provider; the bot editor lists the models installed there. Bots on `ollama` keep their model even when an OpenRouter key is set. |
+| Providers | `claude_code_selected`, `claude_code_model` | An explicit choice (set by the setup wizard or here), not mere detection: `claude` being installed is never enough on its own. Seeds the demo team on the `claude-code` provider with this model when no API provider is configured. See [Claude Code bots](#claude-code-bots). |
+| Providers | `claude_code_own_profile` (`false`) | Runs claude-code bots with their own `CLAUDE_CONFIG_DIR` instead of your personal one, cutting their token use; needs a one-time separate login, shown here once turned on. See [Cutting the token cost of Claude Code bots](#cutting-the-token-cost-of-claude-code-bots). |
 | Embeddings | `embedding_model`, `embedding_dims` | `provider:model` for semantic memory search (`openrouter:openai/text-embedding-3-small`/1536 using the OpenRouter key, `openai:text-embedding-3-small`/1536, `ollama:nomic-embed-text`/768). Empty turns semantic search off. Applies immediately: the memory store is reopened. |
 | Run limits | `max_model_calls_per_run` (60), `max_bot_hops` (20) | Model turns per run before the agent stops with a notice (a bot can lower it in `model_settings.max_model_calls`; the seeded Chief of Staff uses 6); bot-to-bot mention chain limit per thread. `model_settings` also accepts `reasoning_effort` (set from the Effort select for models that declare levels), `temperature`, `max_tokens`. |
 | Context | `tool_output_cap` (8000), `shell_output_cap` (4000) | Longest single tool result the model sees; shorter cap for `run_shell` so dumping files through the shell loses to `read_file` ranges. |

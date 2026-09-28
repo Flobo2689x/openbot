@@ -67,7 +67,7 @@ def test_status_and_default():
 
 async def test_providers_endpoint(client):
     r = await client.get("/api/v1/providers")
-    assert r.status_code == 200 and {p["id"] for p in r.json()["providers"]} == {"auto", "openai", "anthropic", "openrouter", "xai", "ollama"}
+    assert r.status_code == 200 and {p["id"] for p in r.json()["providers"]} == {"auto", "openai", "anthropic", "openrouter", "xai", "ollama", "claude-code"}
 
 
 def test_status_includes_auto_provider():

@@ -1,4 +1,4 @@
-export type ChatChoice = "openrouter" | "openai" | "anthropic" | "xai" | "ollama";
+export type ChatChoice = "openrouter" | "openai" | "anthropic" | "xai" | "ollama" | "claude-code";
 export type EmbeddingChoice = "openrouter" | "openai" | "ollama" | "none";
 
 export interface WizardState {
@@ -7,24 +7,29 @@ export interface WizardState {
   ollamaUrl: string;
   ollamaModel: string;
   botModel: string;
+  claudeCodeModel: string;
   embeddings: EmbeddingChoice;
   openaiKeyForEmbeddings: string;
   openrouterKeyForEmbeddings: string;
   ollamaEmbeddingModel: string;
 }
 
+// "claude-code" is filtered out by the wizard component unless GET /providers reports it configured
+// (claude found on PATH) -- listed here only so its label/hint live with the others.
 export const CHAT_CHOICES: { id: ChatChoice; label: string; hint: string }[] = [
   { id: "openrouter", label: "OpenRouter", hint: "One key for most models. The default for bots on the auto provider." },
   { id: "openai", label: "OpenAI", hint: "GPT models; the same key can power embeddings." },
   { id: "anthropic", label: "Anthropic", hint: "Claude models." },
   { id: "xai", label: "xAI", hint: "Grok models." },
   { id: "ollama", label: "Ollama (local)", hint: "A model server on this machine. No key, no cost, needs a capable model." },
+  { id: "claude-code", label: "Claude Code (local CLI)", hint: "Uses the Claude Code CLI already installed and logged in on this machine. No key." },
 ];
 
-export const KEY_LABEL: Record<Exclude<ChatChoice, "ollama">, string> = { openrouter: "OpenRouter", openai: "OpenAI", anthropic: "Anthropic", xai: "xAI" };
+export const KEY_LABEL: Record<Exclude<ChatChoice, "ollama" | "claude-code">, string> = { openrouter: "OpenRouter", openai: "OpenAI", anthropic: "Anthropic", xai: "xAI" };
 
 export const initialWizardState = (): WizardState => ({
   chat: "openrouter", apiKey: "", ollamaUrl: "http://localhost:11434", ollamaModel: "llama3.1", botModel: "z-ai/glm-5.3-flash",
+  claudeCodeModel: "sonnet",
   embeddings: "none", openaiKeyForEmbeddings: "", openrouterKeyForEmbeddings: "", ollamaEmbeddingModel: "nomic-embed-text",
 });
 
@@ -35,7 +40,7 @@ export function validateWizard(s: WizardState): WizardErrors {
   if (s.chat === "ollama") {
     if (!s.ollamaUrl.trim()) errors.ollamaUrl = "Enter the Ollama base URL";
     if (!s.ollamaModel.trim()) errors.ollamaModel = "Enter a model name";
-  } else if (!s.apiKey.trim()) {
+  } else if (s.chat !== "claude-code" && !s.apiKey.trim()) {
     errors.apiKey = `Paste your ${KEY_LABEL[s.chat]} API key`;
   }
   if (s.embeddings === "openai" && s.chat !== "openai" && !s.openaiKeyForEmbeddings.trim()) {
@@ -56,6 +61,9 @@ export function wizardPayload(s: WizardState): Record<string, unknown> {
   if (s.chat === "ollama") {
     body.ollama_base_url = s.ollamaUrl.trim();
     body.ollama_model = s.ollamaModel.trim();
+  } else if (s.chat === "claude-code") {
+    body.claude_code_selected = true;
+    body.claude_code_model = s.claudeCodeModel.trim();
   } else {
     body[`${s.chat}_api_key`] = s.apiKey.trim();
     if (s.chat === "openrouter" && s.botModel.trim()) body.bot_model = s.botModel.trim();

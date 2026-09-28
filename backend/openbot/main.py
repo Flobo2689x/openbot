@@ -169,6 +169,8 @@ async def stop_background(services: Services) -> None:
         await services.actors.stop()
     if services.mcp is not None:
         await services.mcp.stop()
+    if services.cli_mcp is not None:
+        await services.cli_mcp.stop()
     if services.model_catalog is not None:
         await services.model_catalog.close()
     if services.reflector is not None:

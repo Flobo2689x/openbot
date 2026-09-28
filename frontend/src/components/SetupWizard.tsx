@@ -1,9 +1,10 @@
+import { useQuery } from "@tanstack/react-query";
 import { useSaveMutation } from "../lib/saveNotifications";
 import { useState } from "react";
 import { Api } from "../api/client";
 import type { SetupStatus } from "../api/types";
 import { CHAT_CHOICES, KEY_LABEL, initialWizardState, validateWizard, wizardPayload, type EmbeddingChoice, type WizardState } from "../lib/setup";
-import { Button, ErrorText, Hint, Input } from "./ui";
+import { Button, ErrorText, Hint, Input, Select } from "./ui";
 
 /** One entry in the two-step progress list: the current step is filled with the accent, the rest outlined. */
 function Step({ n, current, label }: { n: 1 | 2; current: 1 | 2; label: string }) {
@@ -25,7 +26,12 @@ export default function SetupWizard({ status, onDone }: { status: SetupStatus; o
   const errors = validateWizard(state);
   const save = useSaveMutation({ mutationFn: () => Api.patchSettings(wizardPayload(state)), onSuccess: onDone }, "Settings saved");
   const set = <K extends keyof WizardState>(k: K, v: WizardState[K]) => setState((s) => ({ ...s, [k]: v }));
-  const stepOneOk = state.chat === "ollama" ? !errors.ollamaUrl && !errors.ollamaModel : !errors.apiKey;
+  const stepOneOk = state.chat === "ollama" ? !errors.ollamaUrl && !errors.ollamaModel : state.chat === "claude-code" ? true : !errors.apiKey;
+  // Claude Code only appears once GET /providers reports the CLI found; a wizard opened before that
+  // request resolves shows the rest of the choices and adds this one once it settles.
+  const providers = useQuery({ queryKey: ["providers"], queryFn: Api.getProviders });
+  const claudeCode = providers.data?.providers.find((p) => p.id === "claude-code");
+  const chatChoices = CHAT_CHOICES.filter((c) => c.id !== "claude-code" || claudeCode?.configured);
   const finish = () => { setTouched(true); if (Object.keys(errors).length === 0) save.mutate(); };
   const choice = (selected: boolean) => `block w-full rounded-ui border p-3 text-left transition-colors ${selected ? "border-accent bg-accent/10" : "border-line hover:border-line-strong hover:bg-sunken/60"}`;
   const fieldError = (msg?: string) => touched && msg ? <p className="text-xs text-danger">{msg}</p> : null;
@@ -49,7 +55,7 @@ export default function SetupWizard({ status, onDone }: { status: SetupStatus; o
           <section className="space-y-3">
             <Hint>Which model provider should bots use? Pick one now; more can be added in Settings.</Hint>
             <div className="grid gap-2">
-              {CHAT_CHOICES.map((c) => (
+              {chatChoices.map((c) => (
                 <button key={c.id} type="button" className={choice(state.chat === c.id)} onClick={() => set("chat", c.id)} aria-pressed={state.chat === c.id}>
                   <div className="text-[13px] font-medium">{c.label}</div>
                   <div className="font-sans text-xs text-muted">{c.hint}</div>
@@ -63,6 +69,13 @@ export default function SetupWizard({ status, onDone }: { status: SetupStatus; o
                 <Input value={state.ollamaModel} placeholder="Model, for example llama3.1 or qwen3" onChange={(e) => set("ollamaModel", e.target.value)} />
                 {fieldError(errors.ollamaModel)}
                 <Hint className="text-xs">The model must already be pulled (<code>ollama pull &lt;model&gt;</code>) and should support tool calling.</Hint>
+              </div>
+            ) : state.chat === "claude-code" ? (
+              <div className="space-y-2">
+                <Select value={state.claudeCodeModel} onChange={(e) => set("claudeCodeModel", e.target.value)}>
+                  {(claudeCode?.models ?? ["sonnet", "opus", "haiku"]).map((m) => <option key={m} value={m}>{m}</option>)}
+                </Select>
+                <Hint className="text-xs">Every demo bot runs through the Claude Code CLI already installed and logged in on this machine; no key to paste.</Hint>
               </div>
             ) : (
               <div className="space-y-2">

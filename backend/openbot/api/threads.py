@@ -24,6 +24,7 @@ from openbot.db.models import (
     Thread,
     ThreadParticipant,
 )
+from openbot.runtime import activity
 from openbot.runtime.delivery import (
     DEFAULT_BOT_HANDLE,
     ack_items,
@@ -32,6 +33,7 @@ from openbot.runtime.delivery import (
     human_actor,
 )
 from openbot.runtime.waiters import waiters_for
+from openbot.runtime.worktrees import WorktreeError, loss_summary, remove_worktree, worktree_status
 from openbot.services import Services
 
 router = APIRouter(prefix="/threads", tags=["threads"])
@@ -91,7 +93,8 @@ async def create(body: ThreadCreate, session: AsyncSession = Depends(get_session
     try:
         thread = await create_thread(services, session, title=body.title, handles=body.handles, created_by=you,
                                      default_bot_handle=body.default_bot_handle,
-                                     working_directory=body.working_directory)
+                                     working_directory=body.working_directory,
+                                     isolated_worktree=body.isolated_worktree)
     except ValueError as e:
         raise HTTPException(422, str(e)) from e
     parts = await participants_for(session, [thread.id])
@@ -152,14 +155,60 @@ async def update_thread(thread_id: str, body: ThreadUpdate, session: AsyncSessio
 
 
 @router.delete("/{thread_id}", status_code=204)
-async def delete_thread(thread_id: str, session: AsyncSession = Depends(get_session)):
+async def delete_thread(thread_id: str, keep_worktree: bool = False, session: AsyncSession = Depends(get_session),
+                        services: Services = Depends(get_services)):
+    """A thread with an isolated worktree takes it along when nothing would be lost. Otherwise this is a
+    409 naming what would be lost, and the thread stays until its work is pushed, the worktree is discarded
+    (DELETE /threads/{id}/worktree?discard=true), or the caller keeps the worktree (?keep_worktree=true)."""
     thread = await get_thread_or_404(session, thread_id)
+    if thread.worktree and not keep_worktree:
+        try:
+            result = await remove_worktree(thread.worktree)
+        except WorktreeError as e:
+            raise HTTPException(409, {"message": str(e), "worktree": await worktree_status(thread.worktree)}) from e
+        await activity.record(services, "thread.worktree_removed", thread_id=thread_id,
+                              summary=f"worktree {result['path']} removed with its thread"
+                                      + (f"; branch {result['branch']} kept" if result["branch_kept"] else ""),
+                              path=result["path"], branch=result["branch"], branch_kept=result["branch_kept"])
     for model in (InboxItem, Run, Message, ThreadParticipant):
         for row in (await session.execute(select(model).where(model.thread_id == thread_id))).scalars():
             await session.delete(row)
     await session.flush()  # remove children before the parent, or the DB cascade beats the ORM to them
     await session.delete(thread)
     await session.commit()
+
+
+@router.get("/{thread_id}/worktree")
+async def get_worktree(thread_id: str, session: AsyncSession = Depends(get_session)):
+    """What removing the thread's worktree would lose (uncommitted changes, commits that exist nowhere else)."""
+    thread = await get_thread_or_404(session, thread_id)
+    if not thread.worktree:
+        raise HTTPException(404, "thread has no isolated worktree")
+    return await worktree_status(thread.worktree)
+
+
+@router.delete("/{thread_id}/worktree")
+async def delete_worktree(thread_id: str, discard: bool = False, session: AsyncSession = Depends(get_session),
+                          services: Services = Depends(get_services)):
+    """Remove the thread's worktree and branch; the thread goes back to the directory it was made for.
+    Without discard only when nothing would be lost (409 otherwise); `discard=true` is the explicit, confirmed
+    choice to throw away uncommitted changes and unpushed commits, and the only path that forces anything."""
+    thread = await get_thread_or_404(session, thread_id)
+    if not thread.worktree:
+        raise HTTPException(404, "thread has no isolated worktree")
+    try:
+        result = await remove_worktree(thread.worktree, discard=discard)
+    except WorktreeError as e:
+        raise HTTPException(409, {"message": str(e), "worktree": await worktree_status(thread.worktree)}) from e
+    info = thread.worktree
+    thread.working_directory, thread.worktree = info.get("origin"), None
+    await session.commit()
+    await activity.record(services, "thread.worktree_removed", thread_id=thread_id,
+                          summary=f"worktree {result['path']} {'discarded' if discard else 'removed'}"
+                                  + (f": {loss_summary(result)} thrown away" if discard and not result["clean"] else ""),
+                          path=result["path"], branch=result["branch"], discard=discard,
+                          uncommitted=result["uncommitted"], unpushed=result["unpushed"])
+    return result
 
 
 @router.post("/{thread_id}/ack")

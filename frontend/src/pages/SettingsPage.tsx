@@ -4,6 +4,7 @@ import { Api, getApiKey, setApiKey } from "../api/client";
 import type { AppSetting, McpCatalogEntry, McpServer, McpServerInput } from "../api/types";
 import { Badge, Button, Card, Dialog, ErrorText, Field, Hint, Input, PageTitle, SectionTitle, Textarea } from "../components/ui";
 import { ModelPicker } from "../components/ModelPicker";
+import ClaudeCodeProfilePanel from "../components/ClaudeCodeProfilePanel";
 import { dismissSaveNotification, notifySave, useSaveMutation } from "../lib/saveNotifications";
 import { formatSettingValue, groupSettings, parseSettingInput, type SettingGroup } from "../lib/appSettings";
 import { formatArgs, formatKeyValues, mcpActions, mcpInFlight, mcpStatusBadge, parseArgs, parseKeyValues, validateNewMcpServer, type McpTransport } from "../lib/mcpServers";
@@ -225,6 +226,7 @@ function SettingsGroupCard({ group }: { group: SettingGroup }) {
                 </div>
                 <div className="font-sans text-xs text-muted">{item.description}</div>
                 {errors[item.key] && <div className="text-xs text-danger">{errors[item.key]}</div>}
+                {item.key === "claude_code_own_profile" && draft === "true" && <ClaudeCodeProfilePanel />}
               </div>
               <div className="flex items-center">
                 {item.type === "bool" ? (

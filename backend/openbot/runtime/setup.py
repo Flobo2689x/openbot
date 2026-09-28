@@ -6,6 +6,7 @@ off). Values come from the live `Settings`, so database overrides and `.env` bot
 """
 from __future__ import annotations
 
+from openbot.runtime.cli_agent import find_claude
 from openbot.runtime.providers import PROVIDER_ORDER, provider_configured
 
 CHAT_PROVIDERS = tuple(PROVIDER_ORDER)
@@ -20,6 +21,10 @@ def _configured(settings, provider: str) -> bool:
 
 def setup_status(settings) -> dict:
     providers = [p for p in CHAT_PROVIDERS if _configured(settings, p)]
+    # Explicit choice, not mere presence: claude found on PATH means nothing here unless the operator
+    # picked it (see config.claude_code_selected). Checked live, so removing the CLI un-completes setup.
+    if settings.claude_code_selected and find_claude(settings) is not None:
+        providers = [*providers, "claude-code"]
     model = (settings.embedding_model or "").strip()
     if not model:
         embeddings = {"ok": True, "model": "", "reason": "semantic memory search is off"}

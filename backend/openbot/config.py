@@ -60,6 +60,23 @@ class Settings(BaseSettings):
     mcp_token_key: str | None = None
     mcp_token_key_file: Path = Path("./mcp_token.key")
 
+    # Bots on the claude-code provider (runtime/cli_agent.py): the CLI is looked up on PATH and in its usual
+    # install locations unless CLAUDE_CODE_PATH names it; a run is stopped after the timeout (bots can override).
+    claude_code_path: str | None = None
+    claude_code_timeout: int = 1800
+    # Explicit setup/Settings choice, distinct from claude just being installed: many people have it on
+    # PATH for their own work, unrelated to OpenBot, so its mere presence must never silently complete
+    # setup or seed real bots. claude_code_model seeds the demo bots and is the bot editor's default.
+    claude_code_selected: bool = False
+    claude_code_model: str = "sonnet"
+    # Isolated per-thread git worktrees (runtime/worktrees.py) live here; unset means the per-user default
+    # (%LOCALAPPDATA%\OpenBot\wt, or $XDG_DATA_HOME/openbot/wt). Never inside the repository itself.
+    worktrees_dir: Path | None = None
+    # An isolated Claude Code config/credentials directory for OpenBot's own bots (CLAUDE_CONFIG_DIR), so
+    # they don't inherit the operator's personal skills, agents and MCP servers. Off by default: needs its
+    # own one-time `claude auth login` (see runtime/cli_agent.claude_profile_dir and the login-command API).
+    claude_code_own_profile: bool = False
+
     max_concurrent_runs: int = 4
     max_bot_hops: int = 20
     # Token-efficiency controls. See README "Configuration".

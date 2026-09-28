@@ -126,6 +126,9 @@ class Thread(TimestampMixin, Base):
     hop_limit_notified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     auto_renamed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     last_message_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    # The thread's own git worktree when it was created isolated (runtime/worktrees.py): repo, path, branch,
+    # base_ref, base_commit, subdir and origin (the working directory it was made for). None otherwise.
+    worktree: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class ThreadParticipant(Base):

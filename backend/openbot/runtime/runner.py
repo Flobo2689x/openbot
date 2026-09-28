@@ -34,9 +34,27 @@ from openbot.db.models import (
 )
 from openbot.runtime import activity, memory
 from openbot.runtime.caching import caching_middleware
+from openbot.runtime.cli_agent import (
+    NOT_FOUND,
+    CliAgentError,
+    billing_mode,
+    child_env,
+    claude_auth_status,
+    claude_profile_dir,
+    find_claude,
+    is_cli_agent,
+    login_commands,
+    openbot_tools_enabled,
+    render_messages,
+    run_claude_code,
+    since_last_reply,
+)
+from openbot.runtime.cli_mcp import ALLOW_RULE as MCP_ALLOW_RULE
+from openbot.runtime.cli_mcp import CliMcpServer
 from openbot.runtime.delivery import DEFAULT_BOT_HANDLE, deliver_question, post_message
+from openbot.runtime.project_instructions import load_project_instructions
 from openbot.runtime.prompt import build_history, build_system_prompt
-from openbot.runtime.providers import builtin_tools, effective_bot_profile
+from openbot.runtime.providers import builtin_tools, default_provider, effective_bot_profile
 from openbot.runtime.retry import ModelRetryMiddleware
 from openbot.tools.builtin.core import CORE_TOOLS
 from openbot.tools.builtin.scheduling import SCHEDULING_TOOLS
@@ -216,7 +234,7 @@ class Runner:
         except Exception:
             log.exception("could not delete the checkpoint for run %s", run_id)
 
-    async def _prepare(self, bot: Actor, thread: Thread, run: Run) -> tuple[str, dict, int]:
+    async def _prepare(self, bot: Actor, thread: Thread, run: Run, *, cli: bool = False) -> tuple[str, dict, int]:
         st = self.s.settings
         async with self.s.session_factory() as session:
             all_actors = (await session.execute(select(Actor))).scalars().all()
@@ -253,8 +271,9 @@ class Runner:
                                      workspace_root=str(workspace_root), older_count=older,
                                      # Only tools that will actually be bound: an MCP server that is down
                                      # must not be advertised, or the model calls a tool it does not have.
-                                     tool_names=[n for n in bot.bot.tool_names if self.s.registry.has(n)],
-                                     default_bot_handle=default_bot_handle, scoped=scoped)
+                                     tool_names=[] if cli else [n for n in bot.bot.tool_names if self.s.registry.has(n)],
+                                     default_bot_handle=default_bot_handle, scoped=scoped, cli=cli,
+                                     cli_tools=cli and openbot_tools_enabled(bot.bot))
         hop = max([m.hop for m in triggers], default=0) + 1
         return prompt, {"messages": history}, hop
 
@@ -378,6 +397,116 @@ class Runner:
                             seq = await self._record(run, seq, "text", {"content": final_text})
         return final_text, interrupt, seq, usage
 
+    async def _cli_session(self, bot_id: str, thread_id: str) -> dict | None:
+        """The CLI session this bot last used in this thread: stored as a `cli_session` run event, so no
+        table is needed, and it goes away with the thread."""
+        async with self.s.session_factory() as session:
+            return (await session.execute(
+                select(RunEvent.payload).join(Run, Run.id == RunEvent.run_id)
+                .where(Run.actor_id == bot_id, Run.thread_id == thread_id, RunEvent.type == "cli_session")
+                .order_by(RunEvent.created_at.desc(), RunEvent.seq.desc()).limit(1))).scalar()
+
+    async def _execute_cli(self, bot: Actor, thread: Thread, run: Run, seq: int, system_prompt: str, history: list,
+                           workspace_root, hop: int, started: float) -> None:
+        """A turn run by a coding agent CLI (runtime/cli_agent.py) instead of create_agent. Its events land in
+        the same run events, and its result is posted like any reply, so hand-offs work unchanged."""
+        executable = find_claude(self.s.settings)
+        if executable is None:
+            raise CliAgentError(NOT_FOUND)
+        workspace_root.mkdir(parents=True, exist_ok=True)
+        cwd = str(workspace_root)
+        previous = await self._cli_session(bot.id, thread.id)
+        # A session only resumes where it was made: the CLI keys its transcripts by working directory.
+        resume = None
+        if previous and previous.get("session_id") and previous.get("cwd") == cwd:
+            unseen = since_last_reply(history) or history
+            resume = (previous["session_id"], render_messages(unseen, bot.name))
+
+        profile_dir = claude_profile_dir(self.s.settings) if self.s.settings.claude_code_own_profile else None
+        env = child_env(profile_dir=profile_dir)
+        billing = billing_mode(env)
+        if profile_dir is not None:
+            profile_dir.mkdir(parents=True, exist_ok=True)
+            status = await claude_auth_status(executable, env)
+            if status["logged_in"] is False:
+                commands = login_commands(executable, profile_dir)
+                raise CliAgentError("error: this bot's isolated Claude Code profile is not logged in yet. "
+                                    f"Run once in PowerShell: {commands['powershell']}")
+
+        async def on_event(kind: str, payload) -> None:
+            nonlocal seq
+            if kind == "init":
+                await activity.record(self.s, "run.cli_session", thread_id=run.thread_id, actor_id=run.actor_id, run_id=run.id,
+                                      summary=f"claude started ({billing} billing, key source {payload.get('apiKeySource', 'unknown')})",
+                                      billing=billing, api_key_source=payload.get("apiKeySource"), model=payload.get("model"),
+                                      permission_mode=payload.get("permissionMode"), cwd=cwd, resumed=resume is not None)
+            elif kind == "delta":
+                await self.s.bus.publish("run.event", run.thread_id, {"run_id": run.id, "type": "text_delta", "payload": {"delta": payload}})
+            elif kind == "session":
+                seq = await self._record(run, seq, "cli_session", {"session_id": payload, "cwd": cwd, "billing": billing})
+            elif kind == "text":
+                seq = await self._record(run, seq, "text", {"content": payload})
+            elif kind == "tool_call":
+                log.info("run %s tool_call %s(%s)", run.id, payload["name"], _preview(payload["args"]))
+                seq = await self._record(run, seq, "tool_call", payload)
+                await activity.record(self.s, "run.tool_call", level="debug", thread_id=run.thread_id, actor_id=run.actor_id,
+                                      run_id=run.id, summary=f"{payload['name']}({activity.preview(payload['args'], 200)})",
+                                      name=payload["name"], args=activity.preview(payload["args"]))
+            elif kind == "tool_result":
+                content = payload["content"]
+                log.info("run %s tool_result %s status=%s len=%d: %s", run.id, payload["name"], payload["status"], len(content), _preview(content))
+                seq = await self._record(run, seq, "tool_result", {**payload, "content": content[:TOOL_RESULT_CAP]})
+                await activity.record(self.s, "run.tool_result", level="warning" if payload["status"] == "error" else "debug",
+                                      thread_id=run.thread_id, actor_id=run.actor_id, run_id=run.id,
+                                      summary=f"{payload['name']} -> {payload['status']} ({len(content)} chars)",
+                                      name=payload["name"], status=payload["status"], chars=len(content),
+                                      content=activity.preview(content))
+
+        ms = bot.bot.model_settings or {}
+        # A bot that trusts the directory gets its CLAUDE.md from the CLI itself; the others get OpenBot's
+        # safe reading of it (runtime/project_instructions.py), unless the bot turned that off.
+        if not ms.get("trust_project_settings", False) and ms.get("project_instructions", True):
+            section = await asyncio.to_thread(load_project_instructions, workspace_root)
+            if section:
+                system_prompt = f"{system_prompt}\n{section}\n"
+        # OpenBot's own memory and thread history, served to this run alone (runtime/cli_mcp.py); the token
+        # dies with the run, whichever way it ends.
+        token, mcp_config, extra_allowed = None, None, ()
+        if openbot_tools_enabled(bot.bot):
+            if self.s.cli_mcp is None:
+                self.s.cli_mcp = CliMcpServer(self.s)
+            await self.s.cli_mcp.ensure_started()
+            token = self.s.cli_mcp.grant(bot_id=bot.id, thread_id=thread.id, run_id=run.id)
+            mcp_config, extra_allowed = self.s.cli_mcp.config(token), (MCP_ALLOW_RULE,)
+        try:
+            result = await run_claude_code(executable, cwd=cwd, env=env, system_prompt=system_prompt,
+                                           full_prompt=render_messages(history, bot.name), resume=resume,
+                                           model=bot.bot.model, model_settings=ms,
+                                           timeout=ms.get("timeout_seconds") or self.s.settings.claude_code_timeout,
+                                           on_event=on_event, mcp_config=mcp_config, extra_allowed=extra_allowed)
+        finally:
+            if token is not None:
+                self.s.cli_mcp.revoke(token)
+        usage = result.usage
+        if result.text.strip():
+            async with self.s.session_factory() as session:
+                res = await post_message(self.s, session, thread_id=thread.id, sender=bot, content=result.text, hop=hop, run_id=run.id)
+            seq = await self._record(run, seq, "message", {"message_id": res.message.id})
+        await self._set_status(run.id, "completed", usage=usage)
+        # Reflection needs a regular chat model; without an API provider it would only fail and log, so it is
+        # not even scheduled. The transcript is the thread as the bot saw it plus its reply (the CLI's own
+        # tool calls are not available to OpenBot in a structured form).
+        if (bot.bot.memory_enabled and self.s.reflector is not None and result.text.strip()
+                and default_provider(self.s.settings) is not None):
+            try:
+                self.s.reflector.schedule(bot, [*history, AIMessage(content=result.text)], thread_id=thread.id)
+            except Exception:
+                log.exception("could not schedule memory reflection for run %s", run.id)
+        log.info("run %s completed in %.1fs via claude: reply=%d chars model_calls=%d prompt_tokens=%d cache_read_tokens=%d "
+                 "completion_tokens=%d session=%s resumed=%s billing=%s", run.id, time.monotonic() - started, len(result.text),
+                 usage["model_calls"], usage["prompt_tokens"], usage["cache_read_tokens"], usage["completion_tokens"],
+                 result.session_id, resume is not None, billing)
+
     async def execute(self, run_id: str, resume: Command | None = None) -> None:
         async with self.s.session_factory() as session:
             run = await session.get(Run, run_id)
@@ -397,8 +526,9 @@ class Runner:
         config = {"configurable": {"thread_id": run.id}, "metadata": {"bot": bot.handle, "thread_id": thread.id, "run_id": run.id},
                   "run_name": f"bot:{bot.handle}", "run_id": trace_id}
         started = time.monotonic()
+        cli = is_cli_agent(bot.bot)
         try:
-            system_prompt, inputs, hop = await self._prepare(bot, thread, run)
+            system_prompt, inputs, hop = await self._prepare(bot, thread, run, cli=cli)
             workspace_root = thread_workspace_root(self.s.settings.workspace_root, thread.working_directory)
             eff_provider, eff_model = effective_bot_profile(bot.bot, self.s.settings)
             log.info("run %s started: bot=@%s thread=%s hop=%d resume=%s working_directory=%s tool_root=%s model=%s/%s tools=%s",
@@ -413,6 +543,9 @@ class Runner:
                                   working_directory=thread.working_directory or ".", tool_root=str(workspace_root),
                                   tools=list(bot.bot.tool_names), history_messages=len(inputs.get("messages", [])),
                                   model_call_limit=self.model_call_limit(bot))
+            if cli:
+                await self._execute_cli(bot, thread, run, seq, system_prompt, inputs["messages"], workspace_root, hop, started)
+                return
             ctx = RunContext(bot.id, bot.handle, bot.name, thread.id, run.id, workspace_root, self.s,
                              thread.working_directory, hop, tool_output_cap=self.s.settings.tool_output_cap,
                              shell_output_cap=self.s.settings.shell_output_cap)
@@ -460,13 +593,14 @@ class Runner:
             log.info("run %s cancelled after %.1fs", run.id, time.monotonic() - started)
             await self._set_status(run.id, "cancelled")
             await self._system_message(thread.id, f"@{bot.handle} run was cancelled.")
-            await self._drop_checkpoint(run.id)
+            if not cli:  # a CLI-agent run never checkpoints an agent graph
+                await self._drop_checkpoint(run.id)
             raise
         except Exception as e:
             log.exception("run %s failed", run.id)
-            err = f"{type(e).__name__}: {e}"[:2000]
+            err = (str(e) if isinstance(e, CliAgentError) else f"{type(e).__name__}: {e}")[:2000]
             # Status first: the bookkeeping below is best-effort and must never leave the run in "running".
-            await self._set_status(run.id, "failed", error=err)
+            await self._set_status(run.id, "failed", error=err, usage=getattr(e, "usage", None))
             try:
                 # Re-read the sequence: events recorded inside _stream are not visible to `seq` here.
                 await self._record(run, await self._next_seq(run.id), "error", {"error": err})
@@ -476,4 +610,5 @@ class Runner:
                 await self._system_message(thread.id, f"@{bot.handle} failed: {err}")
             except Exception:
                 log.exception("could not post the failure notice for run %s", run.id)
-            await self._drop_checkpoint(run.id)
+            if not cli:  # a CLI-agent run never checkpoints an agent graph
+                await self._drop_checkpoint(run.id)

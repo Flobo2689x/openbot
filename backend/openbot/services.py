@@ -25,6 +25,7 @@ class Services:
     http_client: Any = None    # httpx.AsyncClient for webhook delivery
     model_catalog: Any = None  # runtime.model_catalog.ModelCatalog (models.dev cache)
     mcp: Any = None            # McpManager
+    cli_mcp: Any = None        # runtime.cli_mcp.CliMcpServer, started on the first claude-code run
     secrets: Any = None        # runtime.secrets.SecretBox for secrets stored in the database
     langgraph_stack: Any = None  # AsyncExitStack holding the checkpointer/store; replaced when embeddings change
     env_defaults: dict = field(default_factory=dict)  # tunables' values before stored overrides (see runtime/app_settings.py)

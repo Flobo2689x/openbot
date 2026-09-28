@@ -19,9 +19,15 @@ export default function ThreadsPage() {
   const [defaultBot, setDefaultBot] = useState("chief_of_staff");
   const [workingDirectory, setWorkingDirectory] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [isolatedWorktree, setIsolatedWorktree] = useState(false);
   const enabledBots = (bots.data ?? []).filter((b) => b.enabled);
   const effectiveDefaultBot = enabledBots.some((b) => b.handle === defaultBot) ? defaultBot : enabledBots[0]?.handle;
   const workingDirectoryValidation = normalizeWorkingDirectory(workingDirectory);
+  // Only a directory inside a git repository can get its own worktree; ask the server, as the picker does.
+  const dirPath = workingDirectoryValidation.value || ".";
+  const dirInfo = useQuery({ queryKey: ["workspace-directories", dirPath], queryFn: () => Api.listDirectories(dirPath),
+    retry: false, enabled: workingDirectoryValidation.ok });
+  const canIsolate = dirInfo.data?.in_git_repo === true;
   const botIconByHandle = useMemo(() => new Map((bots.data ?? []).map((b) => [b.handle, b.icon])), [bots.data]);
   const create = useMutation({
     mutationFn: () => {
@@ -31,6 +37,7 @@ export default function ThreadsPage() {
         handles,
         ...(effectiveDefaultBot ? { default_bot_handle: effectiveDefaultBot } : {}),
         ...(workingDirectoryValidation.value ? { working_directory: workingDirectoryValidation.value } : {}),
+        ...(canIsolate && isolatedWorktree ? { isolated_worktree: true } : {}),
       });
     },
     onSuccess: (t) => { qc.invalidateQueries({ queryKey: ["threads"] }); nav(`/threads/${t.id}`); },
@@ -52,6 +59,12 @@ export default function ThreadsPage() {
           </div>
         </Field>
         {workingDirectoryValidation.error && <p className="text-xs text-danger">{workingDirectoryValidation.error}</p>}
+        {canIsolate && (
+          <label className="flex items-start gap-2 text-[13px]">
+            <input type="checkbox" className="mt-0.5" checked={isolatedWorktree} onChange={(e) => setIsolatedWorktree(e.target.checked)} />
+            <span>Isolated git worktree <span className="block font-sans text-xs text-muted">The thread gets its own checkout and branch (openbot/…), outside the repository, so it can work in parallel with other threads. Removed with the thread when nothing unpushed is left.</span></span>
+          </label>
+        )}
         {pickerOpen && (
           <DirectoryPicker initialPath={initialPickerPath(workingDirectory)} onClose={() => setPickerOpen(false)}
             onSelect={(path) => { setWorkingDirectory(path === "." ? "" : path); setPickerOpen(false); }} />

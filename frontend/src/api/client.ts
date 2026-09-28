@@ -1,4 +1,4 @@
-import type { Actor, AppSetting, Bot, DirectoryListing, McpCatalogEntry, McpConnectResult, McpServer, McpServerInput, BotInboxItem, BotInput, BotMemory, InboxItem, Message, ModelsOut, ProvidersOut, PurgeResult, Run, RunDetail, SetupStatus, Thread, ThreadDetail, ThreadUsage, ToolInfo, DatabaseLocation } from "./types";
+import type { Actor, AppSetting, Bot, DirectoryListing, McpCatalogEntry, McpConnectResult, McpServer, McpServerInput, BotInboxItem, BotInput, BotMemory, InboxItem, Message, ModelsOut, ProvidersOut, PurgeResult, Run, RunDetail, SetupStatus, Thread, ThreadDetail, ThreadUsage, ToolInfo, DatabaseLocation, WorktreeStatus, ClaudeCodeProfile } from "./types";
 
 /** Outgoing attachment for postMessage: a data URL plus an optional display name. */
 export interface ScheduledMessage { id: string; thread_id: string; content: string; due_at: string; status: string; attempts: number; last_error?: string | null; result_message_id?: string | null; to_handles: string[]; }
@@ -64,9 +64,11 @@ export const Api = {
   createActor: (a: { handle: string; name: string; description?: string; webhook_url?: string | null; webhook_secret?: string | null }) => api<Actor>("/actors", { method: "POST", json: a }),
   deleteActor: (id: string) => api<void>(`/actors/${id}`, { method: "DELETE" }),
   listThreads: () => api<Thread[]>("/threads"),
-  createThread: (t: { title?: string; handles: string[]; default_bot_handle?: string; working_directory?: string | null }) => api<Thread>("/threads", { method: "POST", json: t }),
+  createThread: (t: { title?: string; handles: string[]; default_bot_handle?: string; working_directory?: string | null; isolated_worktree?: boolean }) => api<Thread>("/threads", { method: "POST", json: t }),
   getThread: (id: string, before?: string) => api<ThreadDetail>(`/threads/${id}?limit=50${before ? `&before=${before}` : ""}`),
-  deleteThread: (id: string) => api<void>(`/threads/${id}`, { method: "DELETE" }),
+  deleteThread: (id: string, opts: { keepWorktree?: boolean } = {}) => api<void>(`/threads/${id}${opts.keepWorktree ? "?keep_worktree=true" : ""}`, { method: "DELETE" }),
+  getWorktree: (id: string) => api<WorktreeStatus>(`/threads/${id}/worktree`),
+  deleteWorktree: (id: string, discard: boolean) => api<WorktreeStatus>(`/threads/${id}/worktree${discard ? "?discard=true" : ""}`, { method: "DELETE" }),
   updateThread: (id: string, body: { default_bot_handle: string }) => api<Thread>(`/threads/${id}`, { method: "PATCH", json: body }),
   postMessage: (id: string, body: { content: string; to?: string[]; attachments?: AttachmentIn[] }) => api<{ message: Message; addressed: string[]; unaddressed: boolean }>(`/threads/${id}/messages`, { method: "POST", json: body }),
   ackThread: (id: string) => api<{ acked: number }>(`/threads/${id}/ack`, { method: "POST" }),
@@ -97,5 +99,6 @@ export const Api = {
   createScheduled: (body: { thread_id: string; content: string; due_at: string; to: string[] }) => api<ScheduledMessage>("/scheduled", { method: "POST", json: body }),
   cancelScheduled: (id: string) => api<ScheduledMessage>(`/scheduled/${id}/cancel`, { method: "POST" }),
   getProviders: () => api<ProvidersOut>("/providers"),
+  getClaudeCodeProfile: () => api<ClaudeCodeProfile>("/providers/claude-code/profile"),
   getModels: (provider: string) => api<ModelsOut>(`/models?provider=${encodeURIComponent(provider)}`),
 };

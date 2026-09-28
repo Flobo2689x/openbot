@@ -9,6 +9,7 @@ import { ChevronDownIcon, ChevronRightIcon } from "../components/icons";
 import { BOT_ICONS, DEFAULT_BOT_ICON, botIconFor } from "../lib/botIcons";
 import { groupState, groupTools, toggleGroup, toolLabel, unavailableGrants } from "../lib/toolGroups";
 import { supportsWebSearch } from "../lib/webSearch";
+import { CLAUDE_CODE, CLI_CUSTOM, CLI_DEFAULT, cliModelForSelectValue, cliModelSelectValue, offeredProviders, parseAllowedTools, PERMISSION_MODES, providerLabel } from "../lib/cliAgent";
 import { ModelPicker } from "../components/ModelPicker";
 import { effortLevelsFor, hasCatalog, reconcileEffort, splitAutoDefault } from "../lib/modelCatalog";
 
@@ -42,6 +43,13 @@ export default function BotEditorPage() {
   const tools = useQuery({ queryKey: ["tools"], queryFn: Api.listTools });
   const providers = useQuery({ queryKey: ["providers"], queryFn: Api.getProviders });
   const [form, setForm] = useState<BotInput>(empty);
+  // The allowed-tools field keeps what was typed; model_settings.allowed_tools holds the parsed rules.
+  const [allowedToolsText, setAllowedToolsText] = useState("");
+  // Sticky once the reader picks "Custom…" on the claude-code model select, so the field stays open
+  // while they clear it and type: model:"" alone can't tell "CLI default" from "custom, not typed yet".
+  // Not needed to show an *existing* custom model on load -- cliModelSelectValue already detects that
+  // from the model string once providers has loaded.
+  const [customClaudeModel, setCustomClaudeModel] = useState(false);
   // Load the form from each new bot response while rendering, so switching bots never shows a
   // frame of the previous bot's settings.
   const [loadedFrom, setLoadedFrom] = useState<Bot>();
@@ -49,6 +57,9 @@ export default function BotEditorPage() {
     const { id: _i, created_at: _c, updated_at: _u, ...rest } = bot.data;
     setLoadedFrom(bot.data);
     setForm(rest);
+    const rules = bot.data.model_settings.allowed_tools;
+    setAllowedToolsText(Array.isArray(rules) ? rules.join(", ") : "");
+    setCustomClaudeModel(false);
   }
 
   const save = useSaveMutation({
@@ -87,6 +98,9 @@ export default function BotEditorPage() {
   }, [iconPickerOpen]);
 
   const isAuto = form.provider === "auto";
+  const isCli = form.provider === CLAUDE_CODE;
+  const claudeModels = providers.data?.providers.find((p) => p.id === CLAUDE_CODE)?.models ?? [];
+  const cliModelChoice = customClaudeModel ? CLI_CUSTOM : cliModelSelectValue(form.model, claudeModels);
   const auto = providers.data?.providers.find((p) => p.id === "auto");
   const prov = providers.data?.providers.find((p) => p.id === form.provider);
   // The model whose effort levels apply: the bot's own, or for "auto" whatever the server resolves to.
@@ -103,8 +117,9 @@ export default function BotEditorPage() {
     const { reasoning_effort: _current, ...rest } = form.model_settings;
     set("model_settings", v ? { ...rest, reasoning_effort: v } : rest);
   };
-  // effective_bot_profile sends every non-Ollama bot to the default OpenRouter model once that key exists.
-  const rerouted = !isAuto && form.provider !== "ollama" && (providers.data?.providers.find((p) => p.id === "openrouter")?.configured ?? false);
+  // effective_bot_profile sends every non-Ollama bot to the default OpenRouter model once that key exists;
+  // claude-code bots run through the local CLI and are never rerouted.
+  const rerouted = !isAuto && form.provider !== "ollama" && form.provider !== CLAUDE_CODE && (providers.data?.providers.find((p) => p.id === "openrouter")?.configured ?? false);
   const grouped = groupTools(tools.data?.tools ?? []);
   const unavailable = unavailableGrants(form.tool_names, tools.data?.tools ?? []);
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
@@ -163,12 +178,24 @@ export default function BotEditorPage() {
             setForm((f) => ({ ...f, provider: value, model: p?.default_model ?? "" }));
           }}>
             <option value="auto">Auto (recommended){auto?.configured ? "" : " (no provider configured)"}</option>
-            {providers.data?.providers.filter((p) => p.id !== "auto").map((p) => <option key={p.id} value={p.id}>{p.id}{p.configured ? "" : " (not configured)"}</option>)}
+            {offeredProviders(providers.data?.providers ?? [], form.provider).map((p) => <option key={p.id} value={p.id}>{providerLabel(p)}</option>)}
           </Select>
         </Field>
         {isAuto ? (
           <Field label="Model" hint="Chosen automatically from the configured provider.">
             <Input value={auto?.configured ? `auto (currently ${auto.default_model})` : "auto (no provider configured yet)"} disabled />
+          </Field>
+        ) : isCli ? (
+          <Field label="Model" hint="A Claude Code model alias; leave empty for the CLI's default.">
+            <Select value={cliModelChoice} onChange={(e) => {
+              setCustomClaudeModel(e.target.value === CLI_CUSTOM);
+              set("model", cliModelForSelectValue(e.target.value, form.model, claudeModels));
+            }}>
+              <option value={CLI_DEFAULT}>CLI default</option>
+              {claudeModels.map((m) => <option key={m} value={m}>{m}</option>)}
+              <option value={CLI_CUSTOM}>Custom…</option>
+            </Select>
+            {cliModelChoice === CLI_CUSTOM && <Input className="mt-2" value={form.model} onChange={(e) => set("model", e.target.value)} placeholder="Model id" />}
           </Field>
         ) : hasCatalog(form.provider) ? (
           <Field label="Model" hint="Pick from the catalog or type any model id.">
@@ -180,6 +207,26 @@ export default function BotEditorPage() {
             <Input list="models" value={form.model} onChange={(e) => set("model", e.target.value)} required />
             <datalist id="models">{prov?.models.map((m) => <option key={m} value={m} />)}</datalist>
           </Field>
+        )}
+        {isCli && (
+          <>
+            <Field label="Permissions" hint="Claude Code's permission mode for this bot. It replaces OpenBot's per-tool approvals.">
+              <Select value={String(form.model_settings.permission_mode ?? "dontAsk")} onChange={(e) => set("model_settings", { ...form.model_settings, permission_mode: e.target.value })}>
+                {PERMISSION_MODES.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
+              </Select>
+            </Field>
+            <Field label="Allowed tools" hint="Claude Code permission rules allowed without asking, comma-separated, e.g. Read, Edit, Bash(git diff *).">
+              <Input value={allowedToolsText} onChange={(e) => { setAllowedToolsText(e.target.value); set("model_settings", { ...form.model_settings, allowed_tools: parseAllowedTools(e.target.value) }); }} />
+            </Field>
+            <div className="space-y-2 sm:col-span-2">
+              <Toggle checked={form.model_settings.trust_project_settings === true} onChange={(v) => set("model_settings", { ...form.model_settings, trust_project_settings: v })}>Use this directory's Claude Code settings <span className="font-sans text-xs text-muted">(its .claude settings and hooks, CLAUDE.md and .mcp.json servers; only for repositories you trust)</span></Toggle>
+              {form.model_settings.trust_project_settings !== true && (
+                <Toggle checked={form.model_settings.project_instructions !== false} onChange={(v) => set("model_settings", { ...form.model_settings, project_instructions: v })}>Include the project's CLAUDE.md <span className="font-sans text-xs text-muted">(read by OpenBot and added to the prompt; hooks and MCP servers stay out)</span></Toggle>
+              )}
+              <Toggle checked={form.model_settings.openbot_tools !== false} onChange={(v) => set("model_settings", { ...form.model_settings, openbot_tools: v })}>OpenBot memory and thread history <span className="font-sans text-xs text-muted">(this bot's own memories and this thread's messages, as MCP tools on 127.0.0.1 with a token that ends with the run)</span></Toggle>
+            </div>
+            <p className="rounded-ui border border-warn/40 border-l-2 border-l-warn bg-warn/[0.06] px-3 py-2 font-sans text-xs leading-relaxed text-fg sm:col-span-2">This bot runs the local <span className="font-mono text-warn">claude</span> CLI in the thread's working directory, as the server user, with the login you set up for the CLI (or <span className="font-mono">ANTHROPIC_API_KEY</span>, if the server has it set). Its tools are not confined to the workspace the way OpenBot's file tools are; what it may do is decided by the permission mode and allowed tools above, like <span className="font-mono text-warn">run_shell</span>. Of OpenBot's own tools it gets only its memory and this thread's history; ask_human, scheduling and the MCP servers configured in OpenBot are not available to it.</p>
+          </>
         )}
         {effortLevels.length > 0 && (
           <Field label="Effort" hint="How much reasoning the model spends per step. Default lets the provider decide.">
@@ -195,11 +242,17 @@ export default function BotEditorPage() {
           </Hint>
         )}
         <div className="space-y-2 sm:col-span-2">
-          <Toggle checked={form.memory_enabled} onChange={(v) => set("memory_enabled", v)}>Background memory extraction</Toggle>
+          {!isCli && <Toggle checked={form.memory_enabled} onChange={(v) => set("memory_enabled", v)}>Background memory extraction</Toggle>}
           {supportsWebSearch(form.provider, auto?.default_model) && <Toggle checked={form.model_settings.web_search === true} onChange={(v) => set("model_settings", { ...form.model_settings, web_search: v })}>Web search <span className="font-sans text-xs text-muted">(provider-hosted; may incur usage charges)</span></Toggle>}
           <Toggle checked={form.enabled} onChange={(v) => set("enabled", v)}>Enabled</Toggle>
         </div>
       </Card>
+      {isCli ? (
+        <Card className="space-y-3">
+          <SectionTitle>Tools</SectionTitle>
+          <Hint className="text-xs">This bot uses Claude Code's own tools, limited by the permissions above, plus OpenBot's memory and thread history if enabled above. Other OpenBot tools and MCP servers are not given to it.</Hint>
+        </Card>
+      ) : (
       <Card className="space-y-3">
         <SectionTitle>Tools</SectionTitle>
         <Hint className="text-xs">Core tools (ask_human, list_bots, memory, history recall) are always available.</Hint>
@@ -245,6 +298,7 @@ export default function BotEditorPage() {
           </>
         )}
       </Card>
+      )}
       <ErrorText error={save.error ?? remove.error} />
       <div className="flex gap-2">
         <Button type="submit" disabled={save.isPending}>{isNew ? "Create bot" : "Save"}</Button>

@@ -9,6 +9,7 @@ from langchain_core.language_models import BaseChatModel
 
 from openbot.config import Settings
 from openbot.db.models import BotProfile
+from openbot.runtime.cli_agent import CLAUDE_CODE, CLAUDE_CODE_MODELS, find_claude
 
 log = logging.getLogger(__name__)
 
@@ -76,6 +77,9 @@ def effective_bot_profile(bot: BotProfile, settings: Settings) -> tuple[str, str
     A bot on a local Ollama model is an explicit choice to keep that bot off the cloud, so it is
     never rerouted through OpenRouter.
     """
+    if bot.provider == CLAUDE_CODE:
+        # Runs through the local CLI (runtime/cli_agent.py); an empty model is the CLI's own default.
+        return bot.provider, bot.model
     if bot.provider == AUTO_PROVIDER:
         dp = default_provider(settings)
         if dp is None:
@@ -176,6 +180,13 @@ def provider_chat_model(
 
 
 def chat_model(bot: BotProfile, settings: Settings) -> BaseChatModel:
+    if bot.provider == CLAUDE_CODE:
+        # The bot's own turns never get here. Side tasks that need a chat model on its behalf (thread
+        # renaming, memory extraction) use the auto provider, or fail like an unconfigured auto bot.
+        dp = default_provider(settings)
+        if dp is None:
+            raise ValueError("no provider is configured: set an API key for at least one provider")
+        return provider_chat_model(*prefer_direct_anthropic(dp[0], dp[1], settings), settings)
     provider, model = effective_bot_profile(bot, settings)
     return provider_chat_model(provider, model, settings, bot.model_settings)
 
@@ -288,7 +299,10 @@ def provider_status(settings: Settings, ollama_models: list[str] | None = None) 
         }
         for p in PROVIDER_ORDER
     ]
-    return [auto, *rest]
+    # Configured means the CLI was found; its login is the CLI's business, never checked or read here.
+    cli = {"id": CLAUDE_CODE, "configured": find_claude(settings) is not None, "models": list(CLAUDE_CODE_MODELS),
+           "default_model": ""}
+    return [auto, *rest, cli]
 
 
 def default_provider(settings: Settings) -> tuple[str, str] | None:

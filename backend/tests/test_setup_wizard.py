@@ -2,6 +2,7 @@
 import asyncio
 import json
 import os
+import sys
 
 from sqlalchemy import select
 
@@ -9,6 +10,7 @@ from openbot.db.models import Actor, AppSetting
 from openbot.runtime.app_settings import SETUP_COMPLETED_KEY, TUNABLES
 from openbot.runtime.secrets import resolve_secret_key
 from openbot.runtime.setup import setup_status
+from openbot.seed import DEMO_BOTS
 
 # --- secret key resolution --------------------------------------------------------------------------------
 
@@ -66,6 +68,91 @@ async def test_setup_endpoint_and_completion_seeds_the_demo_team(client, service
     await client.patch("/api/v1/settings", json={"bot_model": "openai/gpt-5.5"})
     async with services.session_factory() as s:
         assert len((await s.execute(select(Actor).where(Actor.kind == "bot"))).scalars().all()) == 4   # only once
+
+
+def _fake_claude(tmp_path) -> str:
+    """A file that passes find_claude's "is this runnable" check, standing in for an installed CLI."""
+    p = tmp_path / "claude"
+    p.write_text("#!/bin/sh\n")
+    p.chmod(0o755)
+    return str(p)
+
+
+def _fake_claude_with_auth_status(tmp_path, *, exit_code: int) -> str:
+    """Answers `claude auth status` with a fixed exit code and a plausible JSON body; anything else no-ops."""
+    p = tmp_path / "claude2"
+    if sys.platform == "win32":
+        p = p.with_suffix(".cmd")
+        p.write_text(f'@echo off\r\nif "%1"=="auth" (echo {{"loggedIn": {str(exit_code == 0).lower()}}} & exit /b {exit_code})\r\nexit /b 0\r\n')
+    else:
+        p.write_text(f'#!/bin/sh\nif [ "$1" = "auth" ]; then echo \'{{"loggedIn": {str(exit_code == 0).lower()}}}\'; exit {exit_code}; fi\nexit 0\n')
+        p.chmod(0o755)
+    return str(p)
+
+
+def test_claude_code_only_counts_as_a_chat_provider_when_explicitly_selected(settings, tmp_path):
+    for k in ("openai_api_key", "anthropic_api_key", "openrouter_api_key", "xai_api_key", "ollama_base_url"):
+        setattr(settings, k, None)
+    settings.claude_code_path = _fake_claude(tmp_path)
+    # claude is right there on disk, but nobody chose it: setup stays incomplete, unlike Ollama's URL
+    # check, because a random machine is far more likely to already have claude than OLLAMA_BASE_URL set.
+    assert setup_status(settings)["chat"] == {"ok": False, "providers": []}
+    settings.claude_code_selected = True
+    assert setup_status(settings)["chat"] == {"ok": True, "providers": ["claude-code"]}
+    # An API key still wins if one is also configured (matches "auto"'s own priority).
+    settings.openrouter_api_key = "k"
+    assert setup_status(settings)["chat"]["providers"] == ["openrouter", "claude-code"]
+    # Removing the CLI un-completes it again -- this is a live filesystem check, not a stored fact.
+    settings.openrouter_api_key = None
+    settings.claude_code_path = str(tmp_path / "not-there")
+    assert setup_status(settings)["chat"] == {"ok": False, "providers": []}
+
+
+async def test_setup_completion_via_claude_code_seeds_the_demo_team_on_that_provider(client, services, tmp_path):
+    settings = services.settings
+    for k in ("openai_api_key", "anthropic_api_key", "openrouter_api_key", "xai_api_key", "ollama_base_url"):
+        setattr(settings, k, None)
+    settings.seed_demo_bots = True
+    settings.claude_code_path = _fake_claude(tmp_path)
+    st = (await client.get("/api/v1/setup/status")).json()
+    assert st["complete"] is False and "chat" in st["missing"]
+    r = await client.patch("/api/v1/settings", json={"claude_code_selected": True, "claude_code_model": "opus", "embedding_model": ""})
+    assert r.status_code == 200, r.text
+    assert (await client.get("/api/v1/setup/status")).json()["complete"] is True
+    async with services.session_factory() as s:
+        bots = {a.handle: a.bot for a in (await s.execute(select(Actor).where(Actor.kind == "bot"))).scalars()}
+    assert sorted(bots) == ["chief_of_staff", "engineer", "qa", "reviewer"]
+    assert all((b.provider, b.model) == ("claude-code", "opus") for b in bots.values())
+    # The instructions are exactly the ordinary seed's -- only provider/model differ.
+    assert {h: b.instructions for h, b in bots.items()} == {s["handle"]: s["instructions"] for s in DEMO_BOTS}
+
+
+async def test_claude_code_profile_endpoint_reports_login_status_and_commands(client, services, tmp_path):
+    services.settings.claude_code_path = _fake_claude_with_auth_status(tmp_path, exit_code=1)
+    r = await client.get("/api/v1/providers/claude-code/profile")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["enabled"] is False and body["checked"] is True and body["logged_in"] is False
+    assert body["commands"]["powershell"].startswith('$env:CLAUDE_CONFIG_DIR = ') and "auth login" in body["commands"]["posix"]
+    assert "claude-profile" in body["profile_dir"]
+
+    services.settings.claude_code_path = _fake_claude_with_auth_status(tmp_path, exit_code=0)
+    body = (await client.get("/api/v1/providers/claude-code/profile")).json()
+    assert body["logged_in"] is True
+
+
+async def test_claude_code_profile_endpoint_404s_without_the_cli(client, services, tmp_path):
+    services.settings.claude_code_path = str(tmp_path / "missing")
+    assert (await client.get("/api/v1/providers/claude-code/profile")).status_code == 404
+
+
+def test_isolated_profile_setting_does_not_affect_setup_status(settings, tmp_path):
+    """The setting is orthogonal to whether setup is complete: it only changes how a claude-code bot's
+    process is started, never whether the install has a usable chat provider."""
+    settings.openrouter_api_key = "k"
+    before = setup_status(settings)
+    settings.claude_code_own_profile = True
+    assert setup_status(settings) == before
 
 
 async def test_setup_completed_marker_prevents_reseed(client, services):

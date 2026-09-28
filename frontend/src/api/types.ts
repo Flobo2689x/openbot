@@ -3,7 +3,13 @@ export interface Actor { id: string; kind: ActorKind; handle: string; name: stri
 export interface Bot { id: string; handle: string; name: string; description: string; icon: string; enabled: boolean; active: boolean; instructions: string; provider: string; model: string; model_settings: Record<string, unknown>; tool_names: string[]; approval_tools: string[]; memory_enabled: boolean; created_at: string; updated_at: string; }
 export type BotInput = Omit<Bot, "id" | "created_at" | "updated_at" | "active">;
 export interface Participant { actor_id: string; kind: ActorKind; handle: string; name: string; }
-export interface Thread { id: string; title: string; kind: "chat" | "direct"; created_by_actor_id: string | null; default_bot_actor_id: string | null; default_bot_handle: string | null; working_directory: string | null; external_ref: string | null; created_at: string; updated_at: string; last_message_at: string | null; participants: Participant[]; active?: boolean; }
+export interface Thread { id: string; title: string; kind: "chat" | "direct"; created_by_actor_id: string | null; default_bot_actor_id: string | null; default_bot_handle: string | null; working_directory: string | null; external_ref: string | null; created_at: string; updated_at: string; last_message_at: string | null; participants: Participant[]; active?: boolean; worktree?: ThreadWorktree | null; }
+/** A thread's own git worktree (runtime/worktrees.py). */
+export interface ThreadWorktree { repo: string; path: string; branch: string; base_ref: string | null; base_commit: string; subdir: string; origin: string | null; }
+/** The isolated Claude Code profile's login command and live status (GET /providers/claude-code/profile). */
+export interface ClaudeCodeProfile { enabled: boolean; profile_dir: string; commands: { powershell: string; cmd: string; posix: string }; checked: boolean; logged_in: boolean | null; auth_method?: string | null; error?: string | null; }
+/** What removing a worktree would lose. */
+export interface WorktreeStatus { path: string; branch: string; exists: boolean; branch_exists: boolean; uncommitted: number; unpushed: number; unpushed_commits: string[]; clean: boolean; }
 /** One image attached to a message (mirrors the backend Attachment schema); lives in Message.metadata.attachments. */
 export interface MessageAttachment { url: string; name?: string | null; }
 export interface Message { id: string; thread_id: string; sender_actor_id: string | null; sender_kind: string; sender_name: string; content: string; mentions: string[]; hop: number; run_id: string | null; metadata: Record<string, unknown>; created_at: string; }
@@ -15,7 +21,7 @@ export interface RunDetail extends Run { events: RunEvent[]; }
 export interface Waiter { actor_id: string; handle: string | null; name: string | null; position: number; count: number; queue_len: number; }
 export interface ThreadDetail extends Thread { messages: Message[]; has_more: boolean; runs: Run[]; waiters?: Waiter[]; }
 export interface DirectoryEntry { name: string; path: string; }
-export interface DirectoryListing { path: string; parent: string | null; entries: DirectoryEntry[]; }
+export interface DirectoryListing { path: string; parent: string | null; entries: DirectoryEntry[]; in_git_repo?: boolean; }
 export interface ThreadUsage { model_calls: number; prompt_tokens: number; completion_tokens: number; cache_read_tokens: number; }
 export interface InboxItem { id: string; actor_id: string; thread_id: string; kind: "message" | "question" | "resume"; message_id: string | null; run_id: string | null; payload: Record<string, any>; status: string; attempts: number; last_error: string | null; created_at: string; processed_at: string | null; message: Message | null; }
 export interface BotInboxItem extends InboxItem { thread_kind: "chat" | "direct"; run_status: string | null; reply: Message | null; }

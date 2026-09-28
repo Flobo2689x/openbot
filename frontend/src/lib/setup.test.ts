@@ -3,6 +3,7 @@ import { validateWizard, wizardPayload, type WizardState } from "./setup";
 
 const base: WizardState = {
   chat: "openrouter", apiKey: "", ollamaUrl: "http://localhost:11434", ollamaModel: "llama3.1", botModel: "z-ai/glm-5.3-flash",
+  claudeCodeModel: "sonnet",
   embeddings: "none", openaiKeyForEmbeddings: "", openrouterKeyForEmbeddings: "", ollamaEmbeddingModel: "nomic-embed-text",
 };
 
@@ -15,6 +16,10 @@ describe("validateWizard", () => {
     expect(validateWizard({ ...base, apiKey: "sk-or", embeddings: "openai" })).toEqual({ openaiKeyForEmbeddings: "OpenAI embeddings need an OpenAI API key" });
     expect(validateWizard({ ...base, chat: "openai", apiKey: "sk-oa", embeddings: "openai" })).toEqual({});
     expect(validateWizard({ ...base, apiKey: "sk-or", embeddings: "ollama", ollamaUrl: "" })).toEqual({ ollamaUrl: "Ollama embeddings need the Ollama base URL" });
+  });
+
+  it("asks for nothing on step one for claude-code: no key, no URL", () => {
+    expect(validateWizard({ ...base, chat: "claude-code", apiKey: "" })).toEqual({});
   });
 
   it("asks for an OpenRouter key for OpenRouter embeddings only when chat does not already provide one", () => {
@@ -34,6 +39,8 @@ describe("wizardPayload", () => {
       .toEqual({ openai_api_key: "sk-oa", embedding_model: "openai:text-embedding-3-small", embedding_dims: 1536 });
     expect(wizardPayload({ ...base, chat: "ollama", embeddings: "ollama" }))
       .toEqual({ ollama_base_url: "http://localhost:11434", ollama_model: "llama3.1", embedding_model: "ollama:nomic-embed-text", embedding_dims: 768 });
+    expect(wizardPayload({ ...base, chat: "claude-code", claudeCodeModel: "opus" }))
+      .toEqual({ claude_code_selected: true, claude_code_model: "opus", embedding_model: "" });
   });
 
   it("reuses the OpenRouter chat key for OpenRouter embeddings, or sends the separate one", () => {

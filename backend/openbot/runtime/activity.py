@@ -33,7 +33,7 @@ PREVIEW_CAP = 300
 EVENTS = frozenset({
     "system.started",
     "recovery.run_failed", "recovery.items_requeued",
-    "thread.created",
+    "thread.created", "thread.worktree_created", "thread.worktree_removed",
     "message.posted", "message.hop_limit", "message.handoff_held",
     "inbox.enqueued", "inbox.picked", "inbox.settled", "inbox.acked", "inbox.purged", "inbox.hold_released",
     "question.delivered",
@@ -42,6 +42,7 @@ EVENTS = frozenset({
     "worker.slot.wait", "worker.slot.acquired", "worker.parked",
     "run.created", "run.dispatched", "run.started", "run.status", "run.finished", "run.cancel_requested",
     "run.model_call", "run.tool_call", "run.tool_result", "run.interrupt",
+    "run.cli_session",
     "webhook.attempt",
 })
 LEVELS = ("debug", "info", "warning", "error")

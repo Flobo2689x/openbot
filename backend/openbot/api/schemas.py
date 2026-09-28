@@ -8,7 +8,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from openbot.bot_icons import DEFAULT_BOT_ICON, validate_bot_icon
 
-Provider = Literal["auto", "openai", "anthropic", "openrouter", "xai", "ollama"]
+Provider = Literal["auto", "openai", "anthropic", "openrouter", "xai", "ollama", "claude-code"]
+# Providers whose model may be left empty: auto picks one, claude-code then uses the CLI's default.
+MODEL_OPTIONAL = ("auto", "claude-code")
 HANDLE_RE = r"^[a-z0-9_-]{2,32}$"
 # ~3.5 MB of decoded image bytes (base64 inflates by 4/3).
 MAX_IMAGE_CHARS = 4_700_000
@@ -77,8 +79,8 @@ class BotCreate(BaseModel):
     @field_validator("model")
     @classmethod
     def validate_model(cls, value: str, info) -> str:
-        if info.data.get("provider", "auto") != "auto" and not value:
-            raise ValueError("model is required unless provider is \"auto\"")
+        if info.data.get("provider", "auto") not in MODEL_OPTIONAL and not value:
+            raise ValueError("model is required unless provider is \"auto\" or \"claude-code\"")
         return value
 
     @field_validator("model_settings")
@@ -143,6 +145,8 @@ class ThreadCreate(BaseModel):
     handles: list[str] = []
     default_bot_handle: str | None = Field(default=None, pattern=HANDLE_RE)
     working_directory: str | None = Field(default=None, max_length=1000)
+    # Give the thread its own git worktree and branch (runtime/worktrees.py); the directory must be in a repo.
+    isolated_worktree: bool = False
 
 
 class ThreadUpdate(BaseModel):
@@ -165,6 +169,8 @@ class ThreadOut(BaseModel):
     participants: list[ParticipantOut] = []
     # Live processing state; message recency is not activity.
     active: bool = False
+    # The thread's isolated git worktree, if it has one: repo, path, branch, base_ref, base_commit, subdir, origin.
+    worktree: dict | None = None
 
 
 class MessageOut(BaseModel):
@@ -537,3 +543,5 @@ class DirectoryListingOut(BaseModel):
     path: str
     parent: str | None
     entries: list[DirectoryEntryOut]
+    # Whether ``path`` is inside a git repository, so the new-thread form can offer an isolated worktree.
+    in_git_repo: bool = False

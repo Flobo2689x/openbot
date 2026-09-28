@@ -76,6 +76,46 @@ it("reloads the form when switching to another bot on the same page", async () =
   expect(Api.getBot).toHaveBeenCalledTimes(2);
 });
 
+it("offers Claude Code only when the CLI was found, with its permission settings", async () => {
+  const providers = (found: boolean) => ({ providers: [
+    { id: "auto", configured: true, models: [], default_model: "openrouter/x" },
+    { id: "claude-code", configured: found, models: ["sonnet", "opus", "haiku"], default_model: "" },
+  ], embedding_model: "none", embeddings_configured: false });
+  const options = () => [...el.querySelectorAll("option")].map((o) => o.value);
+  vi.spyOn(Api, "getProviders").mockResolvedValue(providers(false));
+  await show("/edit/b1");
+  await until(() => nameInput() === "Bot b1");
+  expect(options()).not.toContain("claude-code");
+
+  qc.clear();
+  vi.spyOn(Api, "getProviders").mockResolvedValue(providers(true));
+  vi.spyOn(Api, "getBot").mockResolvedValue({ ...bot("b3", "Coder"), provider: "claude-code", model_settings: { permission_mode: "acceptEdits", allowed_tools: ["Read", "Bash(git diff *)"] } });
+  await show("/edit/b3");
+  await until(() => nameInput() === "Coder" && options().includes("claude-code"));
+  expect(options()).toContain("acceptEdits");
+  const modelSelect = [...el.querySelectorAll("select")].find((s) => [...s.options].some((o) => o.textContent === "CLI default"))!;
+  expect(modelSelect).toBeTruthy();
+  expect(modelSelect.selectedOptions[0]!.textContent).toBe("CLI default"); // model: "" from the bot() factory below
+  expect([...el.querySelectorAll("input")].some((i) => i.value === "Read, Bash(git diff *)")).toBe(true);
+  expect(el.textContent).toContain("OpenBot tools and MCP servers are not given to it");
+  // The project's CLAUDE.md is on by default (no project_instructions key), and read by OpenBot itself.
+  const projectToggle = [...el.querySelectorAll("label")].find((l) => l.textContent?.includes("Include the project's CLAUDE.md"));
+  expect(projectToggle?.querySelector<HTMLInputElement>("input")?.checked).toBe(true);
+
+  // Picking a known model selects it directly; picking "Custom…" reveals a free-text field. React
+  // tracks a controlled element's DOM value itself, so the change has to go through the native
+  // setter (as a real user's selection would) for its onChange to fire with the new value.
+  const selectSetter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value")!.set!;
+  const inputSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!;
+  await act(async () => { selectSetter.call(modelSelect, "opus"); modelSelect.dispatchEvent(new Event("change", { bubbles: true })); });
+  expect(modelSelect.value).toBe("opus");
+  await act(async () => { selectSetter.call(modelSelect, "__cli_custom__"); modelSelect.dispatchEvent(new Event("change", { bubbles: true })); });
+  const customInput = el.querySelector<HTMLInputElement>("input[placeholder='Model id']");
+  expect(customInput).not.toBeNull();
+  await act(async () => { inputSetter.call(customInput, "my-fine-tuned-claude"); customInput!.dispatchEvent(new Event("input", { bubbles: true })); });
+  expect(customInput!.value).toBe("my-fine-tuned-claude");
+});
+
 it("offers effort levels only for models that declare them, including the auto provider's resolved model", async () => {
   vi.mocked(Api.getProviders).mockResolvedValue(providers);
   vi.spyOn(Api, "getBot").mockImplementation((id: string) => Promise.resolve(

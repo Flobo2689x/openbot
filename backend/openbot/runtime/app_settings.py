@@ -51,6 +51,16 @@ TUNABLES: dict[str, Tunable] = {
     "ollama_base_url": Tunable("Providers", "Ollama base URL",
         "A local Ollama server, e.g. http://localhost:11434. Setting it enables the ollama provider; no key needed."),
     "ollama_model": Tunable("Providers", "Ollama default model", "Model offered first for bots on the ollama provider."),
+    "claude_code_selected": Tunable("Providers", "Use Claude Code (local CLI)",
+        "Chosen explicitly (in setup or here), not merely detected: lets bots without an API key run through "
+        "the local Claude Code CLI, using whatever login it already has. Needs claude on PATH."),
+    "claude_code_model": Tunable("Providers", "Claude Code default model",
+        "Model for demo bots seeded on the claude-code provider, and the bot editor's default for it. "
+        "Empty means the CLI's own default."),
+    "claude_code_own_profile": Tunable("Providers", "Isolated Claude Code profile",
+        "Runs claude-code bots with their own CLAUDE_CONFIG_DIR instead of your personal one, so they don't "
+        "load your own skills, agents and MCP servers (a real cost: they otherwise count toward every "
+        "prompt). Needs a one-time separate login; see Claude Code bots below once this is on."),
     # --- Embeddings ----------------------------------------------------------------------------------------
     "embedding_model": Tunable("Embeddings", "Embedding model",
         "provider:model for semantic memory search, e.g. openrouter:openai/text-embedding-3-small, "
