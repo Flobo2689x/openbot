@@ -54,7 +54,7 @@ async function decodeImages(files: File[]): Promise<{ attachments: AttachmentIn[
  * The prompt. A `❯` in the gutter, the text you type, and the keys that send it — the one place
  * the interface is allowed to look like a terminal on purpose.
  */
-export default function Composer({ handles, onSend, disabled, hint, autoFocus }: { handles: string[]; onSend: (text: string, attachments: AttachmentIn[]) => Promise<void>; disabled?: boolean; hint?: string; autoFocus?: boolean }) {
+export default function Composer({ handles, onSend, disabled, hint, autoFocus, running }: { handles: string[]; onSend: (text: string, attachments: AttachmentIn[]) => Promise<void>; disabled?: boolean; hint?: string; autoFocus?: boolean; running?: boolean }) {
   const [text, setText] = useState("");
   const [caret, setCaret] = useState(0);
   const [sel, setSel] = useState(0);
@@ -65,8 +65,9 @@ export default function Composer({ handles, onSend, disabled, hint, autoFocus }:
   const ref = useRef<HTMLTextAreaElement>(null);
   // Auto-focus the textarea on mount when requested (e.g. new thread).
   useEffect(() => { if (autoFocus && ref.current) ref.current.focus(); }, [autoFocus]);
+  const [dismissedAt, setDismissedAt] = useState<number | null>(null);
   const q = mentionQuery(text, caret);
-  const options = q ? handles.filter((h) => h.startsWith(q.query)).slice(0, 6) : [];
+  const options = q && q.start !== dismissedAt ? handles.filter((h) => h.startsWith(q.query)).slice(0, 6) : [];
   const pick = (h: string) => {
     if (!q) return;
     const r = applyMention(text, q.start, caret, h);
@@ -93,6 +94,7 @@ export default function Composer({ handles, onSend, disabled, hint, autoFocus }:
       setText("");
       setCaret(0);
       setSel(0);
+      setDismissedAt(null);
       setAttachments([]);
       setSkipped(false);
       setDropped(false);
@@ -149,7 +151,10 @@ export default function Composer({ handles, onSend, disabled, hint, autoFocus }:
             aria-label="Message"
             placeholder={hint ?? "Type a message. @handle addresses a bot."}
             className="min-h-[4.25rem] flex-1 resize-none bg-transparent text-[13.5px] leading-relaxed text-fg outline-none placeholder:text-faint disabled:cursor-not-allowed"
-            onChange={(e) => { setText(e.target.value); setCaret(e.target.selectionStart); setSel(0); }}
+            onChange={(e) => {
+              setText(e.target.value); setCaret(e.target.selectionStart); setSel(0);
+              setDismissedAt((d) => (mentionQuery(e.target.value, e.target.selectionStart)?.start === d ? d : null));
+            }}
             onSelect={(e) => setCaret((e.target as HTMLTextAreaElement).selectionStart)}
             onPaste={(e) => {
               const files = Array.from(e.clipboardData?.items ?? [], (it) => (it.kind === "file" ? it.getAsFile() : null))
@@ -163,6 +168,7 @@ export default function Composer({ handles, onSend, disabled, hint, autoFocus }:
                 if (e.key === "ArrowDown") { e.preventDefault(); setSel((s) => (s + 1) % options.length); return; }
                 if (e.key === "ArrowUp") { e.preventDefault(); setSel((s) => (s - 1 + options.length) % options.length); return; }
                 if (e.key === "Tab" || e.key === "Enter") { e.preventDefault(); pick(options[sel]); return; }
+                if (e.key === "Escape") { e.preventDefault(); setDismissedAt(q?.start ?? null); return; }
               }
               if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); }
             }}
@@ -170,6 +176,7 @@ export default function Composer({ handles, onSend, disabled, hint, autoFocus }:
         </div>
         <div className="flex items-center justify-between gap-3 px-3 pb-2 pt-1">
           <div className="hidden items-center gap-3 text-[11px] text-faint sm:flex" aria-hidden>
+            {running && <span className="inline-flex items-center gap-1"><Kbd>Esc</Kbd> stop</span>}
             <span className="inline-flex items-center gap-1"><Kbd>⏎</Kbd> send</span>
             <span className="inline-flex items-center gap-1"><Kbd>⇧⏎</Kbd> new line</span>
             <span className="inline-flex items-center gap-1"><Kbd>@</Kbd> mention a bot</span>

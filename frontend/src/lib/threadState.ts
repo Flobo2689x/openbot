@@ -23,6 +23,10 @@ export function hydrate(state: ThreadState, detail: ThreadDetail): ThreadState {
   return { ...state, title: detail.title, messages: sortMsgs([...byId.values()]), runs, waiters: detail.waiters ?? [] };
 }
 
+/** Ids of this thread's runs that are still queued, running or waiting on a human. */
+export const openRunIds = (state: ThreadState): string[] =>
+  Object.values(state.runs).filter((r) => r.thread_id === state.threadId && OPEN_RUN_STATUSES.has(r.status)).map((r) => r.id);
+
 /**
  * Runs this page still shows as open that the thread response no longer lists. `GET /threads/{id}`
  * returns every open run, so these finished while their run.updated event never reached the page

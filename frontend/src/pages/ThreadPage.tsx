@@ -11,7 +11,7 @@ import MessageList from "../components/MessageList";
 import { Button, ErrorText, IconButton, OfflineNotice, Spinner } from "../components/ui";
 import { ChevronLeftIcon, MoreIcon } from "../components/icons";
 import { isNearBottom, scrollToBottom } from "../lib/autoScroll";
-import { emptyThreadState, hydrate, mergeRun, missedRunEnds, reduceThreadEvent, type ThreadState } from "../lib/threadState";
+import { emptyThreadState, hydrate, mergeRun, missedRunEnds, openRunIds, reduceThreadEvent, type ThreadState } from "../lib/threadState";
 import { threadUsageLabel } from "../lib/threadUsage";
 import { setOpenBotTitle } from "../lib/documentTitle";
 
@@ -126,6 +126,23 @@ export default function ThreadPage() {
       qc.invalidateQueries({ queryKey: ["threads"] });
     },
   }, "Default bot saved");
+  // Esc stops every open run in the thread, unless an open menu, list or dialog takes the key.
+  const openRuns = openRunIds(state).join(" ");
+  const stopping = useRef(new Set<string>());
+  useEffect(() => {
+    if (!openRuns) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented || event.isComposing) return;
+      if (document.querySelector('[role="menu"], [role="listbox"], [role="dialog"]')) return;
+      for (const runId of openRuns.split(" ")) {
+        if (stopping.current.has(runId)) continue;
+        stopping.current.add(runId);
+        Api.cancelRun(runId).catch(() => stopping.current.delete(runId));
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [openRuns]);
   const latestMessageId = state.messages.at(-1)?.id;
   const streamedChars = Object.values(state.streaming).reduce((a, s) => a + s.length, 0);
   const runEventCount = Object.values(state.runEvents).reduce((a, events) => a + events.length, 0);
@@ -218,7 +235,7 @@ export default function ThreadPage() {
       <div className="border-t border-line pt-3">
         {notice && <p className="mb-1.5 text-xs text-warn">{notice}</p>}
         <ErrorText error={send.error} />
-        <Composer handles={handles} autoFocus={detail.data.messages.length === 0} onSend={async (text, attachments) => { await send.mutateAsync({ content: text, attachments }); }} />      </div>
+        <Composer handles={handles} running={!!openRuns} autoFocus={detail.data.messages.length === 0} onSend={async (text, attachments) => { await send.mutateAsync({ content: text, attachments }); }} />      </div>
     </div>
   );
 }
