@@ -494,6 +494,8 @@ class McpCatalogEntryOut(BaseModel):
     url: str = ""
     required_credentials: list[str]
     compatibility: list[str]
+    status: Literal["template", "deprecated", "unverified"]
+    status_reason: str
 
 
 class McpCatalogInstall(BaseModel):
