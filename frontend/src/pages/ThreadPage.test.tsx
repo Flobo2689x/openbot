@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // React 19: act() must know it runs in a test environment (no RTL here to set it for us).
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { afterEach, describe, expect, it, vi, beforeEach } from "vitest";
 import { act, useEffect } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom";
@@ -108,6 +108,8 @@ describe("ThreadPage window re-entry", () => {
     document.body.appendChild(el);
     root = createRoot(el);
   });
+  // A page left mounted keeps its window Esc listener, which would cancel runs in later tests.
+  afterEach(() => { act(() => root.unmount()); el.remove(); });
 
   it("restores history after leaving to another window and returning mid-run", async () => {
     await mount("/threads/t1");
@@ -211,5 +213,121 @@ describe("ThreadPage window re-entry", () => {
     await go("/threads/t1");
     await until(() => text().includes("completed"), "run card settled");
     expect(text()).not.toContain("running");
+  });
+});
+
+describe("ThreadPage Esc stops open runs", () => {
+  let root: Root;
+  let el: HTMLDivElement;
+  let cancelled: string[];
+  let runs: Run[];
+
+  const text = (): string => el.textContent ?? "";
+  const until = async (cond: () => boolean, what: string): Promise<void> => {
+    const deadline = Date.now() + 2_000;
+    while (!cond()) {
+      if (Date.now() > deadline) throw new Error(`timeout waiting for ${what}; page text: ${text().slice(0, 300)}`);
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
+    }
+  };
+  const esc = async (target: EventTarget = document.body): Promise<void> => {
+    await act(async () => { target.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+  };
+  const textarea = () => el.querySelector("textarea")!;
+  const type = async (value: string): Promise<void> => {
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea(), value);
+      textarea().setSelectionRange(value.length, value.length);
+      textarea().dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  };
+  const mount = async (): Promise<void> => {
+    const qc = new QueryClient({ defaultOptions: { queries: { staleTime: 5_000, retry: false } } });
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={qc}>
+          <MemoryRouter initialEntries={["/threads/t1"]}>
+            <Routes><Route path="/threads/:id" element={<ThreadPage />} /></Routes>
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+    await until(() => text().includes("first reply"), "thread loaded");
+  };
+
+  beforeEach(() => {
+    Element.prototype.scrollTo = () => {};
+    cancelled = [];
+    runs = [run("r1", "running"), { ...run("r2", "queued"), actor_id: "b2" }];
+    fake.api.getThread = () => Promise.resolve({ ...detail("t1", [m1]), runs }) as never;
+    fake.api.getThreadUsage = () => Promise.resolve({ model_calls: 0, prompt_tokens: 0, completion_tokens: 0, cache_read_tokens: 0 }) as never;
+    fake.api.listBots = () => Promise.resolve([{ id: "b1", name: "Coder", handle: "coder", enabled: true, icon: null } as unknown as Bot]) as never;
+    fake.api.ackThread = () => Promise.resolve({ acked: 0 }) as never;
+    fake.api.getRun = (id: string) => Promise.resolve({ ...(runs.find((r) => r.id === id) ?? run(id, "completed")), events: [] }) as never;
+    fake.api.cancelRun = (id: string) => { cancelled.push(id); return Promise.resolve(run(id, "cancelled")) as never; };
+    el = document.createElement("div");
+    document.body.appendChild(el);
+    root = createRoot(el);
+  });
+  afterEach(() => { act(() => root.unmount()); el.remove(); });
+
+  it("cancels every open run in the thread once, and shows the hint while they run", async () => {
+    await mount();
+    expect(text()).toContain("Esc stop");
+    await esc(el.querySelector("textarea")!);
+    expect(cancelled.sort()).toEqual(["r1", "r2"]);
+    await esc();
+    expect(cancelled).toHaveLength(2);
+  });
+
+  it("does nothing when no run is open", async () => {
+    runs = [];
+    await mount();
+    expect(text()).not.toContain("Esc stop");
+    await esc();
+    expect(cancelled).toEqual([]);
+  });
+
+  it("leaves Esc to an open menu", async () => {
+    await mount();
+    await act(async () => { el.querySelector<HTMLButtonElement>('[aria-label="Thread actions"]')!.click(); });
+    expect(el.querySelector('[role="menu"]')).not.toBeNull();
+    await esc();
+    await until(() => el.querySelector('[role="menu"]') === null, "menu closed");
+    expect(cancelled).toEqual([]);
+  });
+
+  it("closes the mention list first, then stops on the next Esc", async () => {
+    await mount();
+    const listOpen = () => el.querySelector('[role="listbox"]') !== null;
+    await type("@c");
+    expect(listOpen()).toBe(true);
+    await esc(textarea());
+    expect(listOpen()).toBe(false);
+    expect(cancelled).toEqual([]);
+    await type("@co");
+    expect(listOpen()).toBe(false);
+    await esc(textarea());
+    expect(cancelled.sort()).toEqual(["r1", "r2"]);
+  });
+
+  it("offers the mention list again for a new mention after dismissing one", async () => {
+    await mount();
+    await type("@c");
+    await esc(textarea());
+    await type("");
+    await type("@c");
+    expect(el.querySelector('[role="listbox"]')).not.toBeNull();
+  });
+
+  it("forgets a dismissed mention list once the draft is sent", async () => {
+    fake.api.postMessage = () => Promise.resolve({ unaddressed: false }) as never;
+    await mount();
+    await type("@c");
+    await esc(textarea());
+    await act(async () => { textarea().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
+    await until(() => textarea().value === "", "draft sent");
+    await type("@");
+    expect(el.querySelector('[role="listbox"]')).not.toBeNull();
   });
 });
