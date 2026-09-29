@@ -8,6 +8,7 @@ import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import ThreadPage from "./ThreadPage";
 import type { Bot, Message, Run, ThreadDetail } from "../api/types";
+import { clearThreadDraft } from "../lib/threadDrafts";
 
 // SSE is replaced wholesale: the page only consumes callbacks, and jsdom has no EventSource.
 // Capturing them lets a test inject live events as if they came off the bus.
@@ -57,6 +58,14 @@ describe("ThreadPage window re-entry", () => {
   const navRef: { current: null | ((to: string) => void) } = { current: null };
 
   const text = (): string => el.textContent ?? "";
+  const textarea = (): HTMLTextAreaElement => el.querySelector("textarea")!;
+  const type = async (value: string): Promise<void> => {
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea(), value);
+      textarea().setSelectionRange(value.length, value.length);
+      textarea().dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  };
   const until = async (cond: () => boolean, what: string): Promise<void> => {
     const deadline = Date.now() + 2_000;
     while (!cond()) {
@@ -91,6 +100,8 @@ describe("ThreadPage window re-entry", () => {
   const go = async (path: string): Promise<void> => { await act(async () => { navRef.current?.(path); }); };
 
   beforeEach(() => {
+    clearThreadDraft("t1");
+    clearThreadDraft("t2");
     Element.prototype.scrollTo = () => {};
     getThreadCalls = [];
     server = { t1: [m1], t2: [] };
@@ -100,7 +111,7 @@ describe("ThreadPage window re-entry", () => {
       return Promise.resolve(detail(id, [...(server[id] ?? [])])) as never;
     };
     fake.api.getThreadUsage = () => Promise.resolve({ model_calls: 0, prompt_tokens: 0, completion_tokens: 0, cache_read_tokens: 0 }) as never;
-    fake.api.listBots = () => Promise.resolve([{ id: "b1", name: "Bot", icon: null } as unknown as Bot]) as never;
+    fake.api.listBots = () => Promise.resolve([{ id: "b1", name: "Bot", handle: "bot", enabled: true, icon: null } as unknown as Bot]) as never;
     fake.api.ackThread = () => Promise.resolve({ acked: 0 }) as never;
     fake.api.getRun = (id: string) => Promise.resolve({ ...run(id, runStatus[id] ?? "running"), events: [] }) as never;
     qc = new QueryClient({ defaultOptions: { queries: { staleTime: 5_000, retry: false } } });
@@ -110,6 +121,64 @@ describe("ThreadPage window re-entry", () => {
   });
   // A page left mounted keeps its window Esc listener, which would cancel runs in later tests.
   afterEach(() => { act(() => root.unmount()); el.remove(); });
+
+  it("restores each thread's draft after switching away and back", async () => {
+    await mount("/threads/t1");
+    await until(() => text().includes("first reply"), "initial history");
+    await type("draft for t1");
+    await go("/threads/t2");
+    await until(() => text().includes("title-t2"), "second thread window");
+    expect(textarea().value).toBe("");
+    await type("draft for t2");
+    await go("/threads/t1");
+    await until(() => textarea().value === "draft for t1", "t1 draft restored");
+    await go("/threads/t2");
+    await until(() => textarea().value === "draft for t2", "t2 draft restored");
+  });
+
+  it("persists mention selection when switching away and back", async () => {
+    await mount("/threads/t1");
+    await until(() => text().includes("first reply"), "initial history");
+    await type("@bo");
+    const option = el.querySelector('[role="option"]') as HTMLDivElement | null;
+    expect(option?.textContent).toContain("@bot");
+    await act(async () => { option?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true })); });
+    expect(textarea().value).toBe("@bot ");
+
+    await go("/threads/t2");
+    await until(() => text().includes("title-t2"), "second thread window");
+    await go("/threads/t1");
+    await until(() => textarea().value === "@bot ", "mention draft restored");
+  });
+
+  it("clears a draft only after sending succeeds", async () => {
+    const posted: string[] = [];
+    fake.api.postMessage = (_id: string, body: { content: string }) => { posted.push(body.content); return Promise.resolve({ unaddressed: false }) as never; };
+    await mount("/threads/t1");
+    await until(() => text().includes("first reply"), "initial history");
+    await type("send this draft");
+    await act(async () => { textarea().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
+    await until(() => textarea().value === "", "draft cleared after send");
+    expect(posted).toEqual(["send this draft"]);
+    await go("/threads/t2");
+    await until(() => text().includes("title-t2"), "second thread window");
+    await go("/threads/t1");
+    await until(() => textarea().value === "", "cleared draft stays cleared");
+  });
+
+  it("retains a draft after a failed send and restores it after switching threads", async () => {
+    fake.api.postMessage = () => Promise.reject(new Error("send failed")) as never;
+    await mount("/threads/t1");
+    await until(() => text().includes("first reply"), "initial history");
+    await type("retry this draft");
+    await act(async () => { textarea().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
+    await until(() => textarea().value === "retry this draft", "failed send retains draft");
+
+    await go("/threads/t2");
+    await until(() => text().includes("title-t2"), "second thread window");
+    await go("/threads/t1");
+    await until(() => textarea().value === "retry this draft", "failed draft restored");
+  });
 
   it("restores history after leaving to another window and returning mid-run", async () => {
     await mount("/threads/t1");
@@ -256,6 +325,8 @@ describe("ThreadPage Esc stops open runs", () => {
   };
 
   beforeEach(() => {
+    clearThreadDraft("t1");
+    clearThreadDraft("t2");
     Element.prototype.scrollTo = () => {};
     cancelled = [];
     runs = [run("r1", "running"), { ...run("r2", "queued"), actor_id: "b2" }];
