@@ -52,3 +52,17 @@ async def test_auto_rename_claim_remains_consumed_when_provider_fails(services, 
         renamed = await session.get(Thread, thread.id)
         assert renamed.title == "Initial"
         assert renamed.auto_renamed is True
+
+
+async def test_a_post_that_is_not_delivered_does_not_rename(services, scripts):
+    eng, _ = await seed(services, bot_actor("eng"), bot_actor("chief_of_staff"))
+    scripts["chief_of_staff"] = [ai("Too early")]
+    async with services.session_factory() as session:
+        you = await human_actor(session)
+        thread = await create_thread(services, session, title="Initial", handles=["eng"], created_by=you)
+        await post_message(services, session, thread_id=thread.id, sender=you, content="first")
+        await post_message(services, session, thread_id=thread.id, sender=you, content="second")
+        await post_message(services, session, thread_id=thread.id, sender=eng, content="cut off", deliver=False)
+    async with services.session_factory() as session:
+        thread = await session.get(Thread, thread.id)
+        assert (thread.title, thread.auto_renamed) == ("Initial", False)

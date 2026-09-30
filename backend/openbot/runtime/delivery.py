@@ -165,7 +165,8 @@ async def post_message(services, session: AsyncSession, *, thread_id: str, sende
     unknown = [h for h in to_handles if h not in by_handle]
     if unknown:
         raise ValueError(f"unknown handles: {unknown}")
-    # deliver=False posts for the record only: nobody is woken, not even the default bot.
+    # deliver=False posts for the record only: nobody is woken, not even the default bot, and the thread
+    # is not renamed (that model call would hold up the cancel the post is part of).
     mentioned = parse_mentions(content) if deliver else []
     parts = await _participants(session, thread_id)
     part_ids = [p.actor_id for p in parts]
@@ -287,7 +288,8 @@ async def post_message(services, session: AsyncSession, *, thread_id: str, sende
     # show its waiting state, so publish it in the same breath as the inbox items themselves.
     await publish_waiters(services, session, thread_id)
     await notify(services, items)
-    await maybe_auto_rename(services, thread_id)
+    if deliver:
+        await maybe_auto_rename(services, thread_id)
     return PostResult(message=msg, addressed=targets, unaddressed=unaddressed, items=items, held=held)
 
 
