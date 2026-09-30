@@ -99,6 +99,14 @@ def _text(m) -> str:
 
 
 @dataclass(slots=True)
+class RunProgress:
+    """What a run has produced so far, kept outside `_stream` so a cancelled run can still post it."""
+    reply: str = ""         # text of the last finished model turn
+    streaming: str = ""     # text of the turn still streaming
+    tool_calls: int = 0
+
+
+@dataclass(slots=True)
 class ClearOlderTurnsEdit(ClearToolUsesEdit):
     """`ClearToolUsesEdit` that works in model turns, not in single results.
 
@@ -207,6 +215,20 @@ class Runner:
     async def _system_message(self, thread_id: str, content: str) -> None:
         async with self.s.session_factory() as session:
             await post_message(self.s, session, thread_id=thread_id, sender=None, content=content)
+
+    async def _post_interrupted(self, bot: Actor, thread: Thread, run: Run, hop: int, progress: RunProgress) -> None:
+        """Keep what a cancelled run had written: the reply still streaming, else the last finished turn.
+        Not delivered, so a half-written @mention wakes nobody. Best-effort: the cancel must still land."""
+        text = progress.streaming if progress.streaming.strip() else progress.reply
+        if not text.strip() and not progress.tool_calls:
+            return
+        try:
+            async with self.s.session_factory() as session:
+                res = await post_message(self.s, session, thread_id=thread.id, sender=bot, content=text, hop=hop,
+                                         run_id=run.id, meta={"interrupted": True}, deliver=False)
+            await self._record(run, await self._next_seq(run.id), "message", {"message_id": res.message.id})
+        except Exception:
+            log.exception("could not post the interrupted reply for run %s", run.id)
 
     async def _drop_checkpoint(self, run_id: str) -> None:
         """The agent transcript is checkpointed under the run id only so a `waiting_human` run can
@@ -320,7 +342,9 @@ class Runner:
         return create_agent(model, tools=tools, system_prompt=system_prompt, middleware=self.build_middleware(bot, model),
                             checkpointer=self.s.checkpointer, store=self.s.store, context_schema=RunContext)
 
-    async def _stream(self, agent, inputs, config, ctx: RunContext, run: Run, seq: int) -> tuple[str, dict | None, int, dict[str, int]]:
+    async def _stream(self, agent, inputs, config, ctx: RunContext, run: Run, seq: int,
+                      progress: RunProgress | None = None) -> tuple[str, dict | None, int, dict[str, int]]:
+        progress = progress if progress is not None else RunProgress()
         final_text, interrupt = "", None
         usage = empty_usage()
         # Middleware nodes that rewrite state (summarization: RemoveMessage(all) + summary + kept messages)
@@ -331,6 +355,7 @@ class Runner:
             if mode == "messages":
                 token, meta = data
                 if isinstance(token, AIMessageChunk) and _text(token) and meta.get("langgraph_node") == "model":
+                    progress.streaming += _text(token)
                     await self.s.bus.publish("run.event", run.thread_id, {"run_id": run.id, "type": "text_delta", "payload": {"delta": _text(token)}})
                 continue
             for source, update in data.items():
@@ -360,6 +385,8 @@ class Runner:
                             if m.id in seen_replies:
                                 continue
                             seen_replies.add(m.id)
+                        progress.streaming = ""
+                        progress.tool_calls += len(m.tool_calls)
                         inc = add_usage(usage, m)
                         if inc is not None:
                             log.info("run %s model call %d: prompt=%d (cache_read=%d) completion=%d", run.id, usage["model_calls"],
@@ -377,7 +404,7 @@ class Runner:
                                                   run_id=run.id, summary=f"{tc['name']}({activity.preview(tc['args'], 200)})",
                                                   name=tc["name"], args=activity.preview(tc["args"]))
                         if _text(m):
-                            final_text = _text(m)
+                            final_text = progress.reply = _text(m)
                             seq = await self._record(run, seq, "text", {"content": final_text})
         return final_text, interrupt, seq, usage
 
@@ -400,6 +427,7 @@ class Runner:
         config = {"configurable": {"thread_id": run.id}, "metadata": {"bot": bot.handle, "thread_id": thread.id, "run_id": run.id},
                   "run_name": f"bot:{bot.handle}", "run_id": trace_id}
         started = time.monotonic()
+        progress, hop = RunProgress(), 0
         try:
             system_prompt, inputs, hop = await self._prepare(bot, thread, run)
             workspace_root = thread_workspace_root(self.s.settings.workspace_root, thread.working_directory)
@@ -425,7 +453,8 @@ class Runner:
             # middleware hook (each is a node every turn traverses) can never make it the binding limit.
             config["recursion_limit"] = self.recursion_limit(agent, bot)
             with collect_runs() as cb:
-                final_text, interrupt, seq, usage = await self._stream(agent, resume if resume is not None else inputs, config, ctx, run, seq)
+                final_text, interrupt, seq, usage = await self._stream(agent, resume if resume is not None else inputs, config, ctx, run, seq,
+                                                                       progress)
             ls_id = str(trace_id) if cb.traced_runs else None
             usage_line = (f"model_calls={usage['model_calls']} prompt_tokens={usage['prompt_tokens']} "
                           f"cache_read_tokens={usage['cache_read_tokens']} completion_tokens={usage['completion_tokens']}")
@@ -461,6 +490,7 @@ class Runner:
             await self._drop_checkpoint(run.id)
         except asyncio.CancelledError:
             log.info("run %s cancelled after %.1fs", run.id, time.monotonic() - started)
+            await self._post_interrupted(bot, thread, run, hop, progress)
             await self._set_status(run.id, "cancelled")
             await self._system_message(thread.id, f"@{bot.handle} run was cancelled.")
             await self._drop_checkpoint(run.id)

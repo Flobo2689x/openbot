@@ -156,3 +156,13 @@ def test_system_prompt_injects_lead_context_only_for_lead():
     instructions = "you are the lead for this thread. When human talks to you, follow this process"
     assert context in lead_prompt and instructions in lead_prompt
     assert context in delegate_prompt and instructions not in delegate_prompt
+
+
+def test_history_marks_the_bots_own_interrupted_reply():
+    cut = msg(2, "bot", "Eng", "half a", "eng")
+    cut.meta = {"interrupted": True}
+    empty = msg(3, "bot", "Eng", "", "eng")
+    empty.meta = {"interrupted": True}
+    hist, _ = build_history([msg(1, "human", "You", "go"), cut, empty, msg(4, "bot", "Eng", "done", "eng")], "eng",
+                            token_budget=10_000, max_messages=80)
+    assert [m.content for m in hist[1:]] == ["half a\n\n[interrupted by the user]", "[interrupted by the user]", "done"]

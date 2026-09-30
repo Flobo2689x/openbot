@@ -225,9 +225,9 @@ async def test_langsmith_id_is_the_pinned_trace_root(settings, monkeypatch):
     seen: dict = {}
     original = Runner._stream
 
-    async def spy(self, agent, inputs, config, ctx, run, seq):
+    async def spy(self, agent, inputs, config, ctx, run, seq, *rest):
         seen["config_run_id"] = config.get("run_id")
-        return await original(self, agent, inputs, config, ctx, run, seq)
+        return await original(self, agent, inputs, config, ctx, run, seq, *rest)
 
     monkeypatch.setattr(Runner, "_stream", spy)
     # collect_runs() yields nothing without a tracer, and then no LangSmith id may be stored.

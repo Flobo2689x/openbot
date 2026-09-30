@@ -155,7 +155,7 @@ async def create_thread(services, session: AsyncSession, *, title: str, handles:
 
 async def post_message(services, session: AsyncSession, *, thread_id: str, sender: Actor | None, content: str,
                        to_handles: Iterable[str] = (), hop: int = 0, run_id: str | None = None,
-                       meta: dict | None = None) -> PostResult:
+                       meta: dict | None = None, deliver: bool = True) -> PostResult:
     thread = await session.get(Thread, thread_id)
     if thread is None:
         raise LookupError("thread not found")
@@ -165,7 +165,8 @@ async def post_message(services, session: AsyncSession, *, thread_id: str, sende
     unknown = [h for h in to_handles if h not in by_handle]
     if unknown:
         raise ValueError(f"unknown handles: {unknown}")
-    mentioned = parse_mentions(content)
+    # deliver=False posts for the record only: nobody is woken, not even the default bot.
+    mentioned = parse_mentions(content) if deliver else []
     parts = await _participants(session, thread_id)
     part_ids = [p.actor_id for p in parts]
     thread_bot_ids = [aid for aid in part_ids if aid in by_id and by_id[aid].kind == "bot"]
@@ -178,8 +179,8 @@ async def post_message(services, session: AsyncSession, *, thread_id: str, sende
         default_bot_id = by_handle[DEFAULT_BOT_HANDLE].id
     targets = resolve_targets(sender=sender, mentioned_handles=mentioned, to_handles=to_handles,
                               actors_by_handle=by_handle, thread_bot_ids=thread_bot_ids,
-                              default_bot_id=default_bot_id)
-    unaddressed = sender is not None and not targets and not (mentioned or to_handles)
+                              default_bot_id=default_bot_id) if deliver else []
+    unaddressed = deliver and sender is not None and not targets and not (mentioned or to_handles)
     # A bot hands off only when it has nothing else waiting in this thread: messages that arrived while
     # it was working are its next run's triggers, and if its reply woke another bot now, that bot would
     # act on a state the sender is about to revise (two review requests for one PR, each reviewed). The
