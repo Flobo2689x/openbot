@@ -224,6 +224,9 @@ class Runner:
             return
         try:
             async with self.s.session_factory() as session:
+                # A cancel that lands while the finished reply is being posted must not post it twice.
+                if (await session.execute(select(Message.id).where(Message.run_id == run.id).limit(1))).first():
+                    return
                 res = await post_message(self.s, session, thread_id=thread.id, sender=bot, content=text, hop=hop,
                                          run_id=run.id, meta={"interrupted": True}, deliver=False)
             await self._record(run, await self._next_seq(run.id), "message", {"message_id": res.message.id})
@@ -385,7 +388,8 @@ class Runner:
                             if m.id in seen_replies:
                                 continue
                             seen_replies.add(m.id)
-                        progress.streaming = ""
+                        # Before any await: a cancel in between must find this turn, not the one before.
+                        progress.streaming, progress.reply = "", _text(m) or progress.reply
                         progress.tool_calls += len(m.tool_calls)
                         inc = add_usage(usage, m)
                         if inc is not None:
@@ -404,7 +408,7 @@ class Runner:
                                                   run_id=run.id, summary=f"{tc['name']}({activity.preview(tc['args'], 200)})",
                                                   name=tc["name"], args=activity.preview(tc["args"]))
                         if _text(m):
-                            final_text = progress.reply = _text(m)
+                            final_text = _text(m)
                             seq = await self._record(run, seq, "text", {"content": final_text})
         return final_text, interrupt, seq, usage
 

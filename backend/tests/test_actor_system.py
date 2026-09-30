@@ -367,3 +367,18 @@ async def test_restart_recovery_drops_checkpoints_of_failed_runs(settings):
         assert (await s.get(Run, run_id)).status == "failed"
     assert await _checkpoint(services, run_id) is None
     await services.actors.stop()
+
+
+async def test_cancel_after_the_reply_was_posted_does_not_post_it_again(settings):
+    from openbot.runtime.runner import RunProgress
+
+    services, t = await setup(settings, {})
+    await services.actors.stop()
+    async with services.session_factory() as s:
+        eng = (await s.execute(select(Actor).where(Actor.handle == "eng"))).scalar_one()
+        run = Run(actor_id=eng.id, thread_id=t.id, status="running")
+        s.add(run)
+        await s.commit()
+        await post_message(services, s, thread_id=t.id, sender=eng, content="the whole reply", run_id=run.id)
+    await services.runner._post_interrupted(eng, t, run, 1, RunProgress(reply="the whole reply"))
+    assert [m.content for m in await bot_messages(services, run.id)] == ["the whole reply"]
