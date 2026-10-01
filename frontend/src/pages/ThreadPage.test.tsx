@@ -151,6 +151,81 @@ describe("ThreadPage window re-entry", () => {
     await until(() => textarea().value === "@bot ", "mention draft restored");
   });
 
+  // A post that is still pending: `settle(true)` lets it succeed, `settle(false)` fail.
+  const pendingPost = () => {
+    let settle = (_ok: boolean) => {};
+    fake.api.postMessage = () => new Promise((resolve, reject) => {
+      settle = (ok) => (ok ? resolve({ unaddressed: false }) : reject(new Error("post failed")));
+    }) as never;
+    return async (ok: boolean) => { await act(async () => { settle(ok); await new Promise((r) => setTimeout(r, 20)); }); };
+  };
+  const pressEnter = async () => { await act(async () => { textarea().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); }); };
+
+  it("keeps what was typed while the previous message was still sending", async () => {
+    const settle = pendingPost();
+    await mount("/threads/t1");
+    await until(() => text().includes("first reply"), "initial history");
+    await type("first message");
+    await pressEnter();
+    await type("typed while sending");
+    await settle(true);
+    expect(textarea().value).toBe("typed while sending");
+    await go("/threads/t2");
+    await until(() => text().includes("title-t2"), "second thread window");
+    await go("/threads/t1");
+    await until(() => textarea().value === "typed while sending", "newer draft restored");
+  });
+
+  it("does not bring a sent message back as a draft when the thread is reopened mid-send", async () => {
+    const settle = pendingPost();
+    await mount("/threads/t1");
+    await until(() => text().includes("first reply"), "initial history");
+    await type("sent once");
+    await pressEnter();
+    await go("/threads/t2");
+    await until(() => text().includes("title-t2"), "second thread window");
+    await go("/threads/t1");
+    await until(() => text().includes("first reply"), "back on t1");
+    expect(textarea().value).toBe("");
+    await settle(true);
+    expect(textarea().value).toBe("");
+    await go("/threads/t2");
+    await until(() => text().includes("title-t2"), "second thread window again");
+    await go("/threads/t1");
+    await until(() => text().includes("first reply"), "back on t1 again");
+    expect(textarea().value).toBe("");
+  });
+
+  it("shows the text again when a send fails after the thread was reopened", async () => {
+    const settle = pendingPost();
+    await mount("/threads/t1");
+    await until(() => text().includes("first reply"), "initial history");
+    await type("retry me");
+    await pressEnter();
+    await go("/threads/t2");
+    await until(() => text().includes("title-t2"), "second thread window");
+    await go("/threads/t1");
+    await until(() => text().includes("first reply"), "back on t1");
+    await settle(false);
+    expect(textarea().value).toBe("retry me");
+    await go("/threads/t2");
+    await until(() => text().includes("title-t2"), "second thread window again");
+    await go("/threads/t1");
+    await until(() => textarea().value === "retry me", "failed text still the draft");
+  });
+
+  it("keeps the same text typed again while the first copy was still sending", async () => {
+    const settle = pendingPost();
+    await mount("/threads/t1");
+    await until(() => text().includes("first reply"), "initial history");
+    await type("ok");
+    await pressEnter();
+    await type("");
+    await type("ok");
+    await settle(true);
+    expect(textarea().value).toBe("ok");
+  });
+
   it("clears a draft only after sending succeeds", async () => {
     const posted: string[] = [];
     fake.api.postMessage = (_id: string, body: { content: string }) => { posted.push(body.content); return Promise.resolve({ unaddressed: false }) as never; };

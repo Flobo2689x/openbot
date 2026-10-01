@@ -284,3 +284,20 @@ def test_an_existing_key_in_the_old_default_location_is_carried_over(monkeypatch
     assert resolve_secret_key(settings) == "old-key"
     assert (tmp_path / "bots" / ".openbot" / "secret.key").read_text(encoding="utf-8") == "old-key"
     assert (tmp_path / "secret.key").is_file()                      # copied, never removed
+
+
+def test_shell_user_needs_an_api_key(monkeypatch):
+    # The shell user shares the backend's localhost; without a key it could call the settings API.
+    import pytest
+    monkeypatch.setenv("SHELL_USER", "shell")
+    monkeypatch.delenv("OPENBOT_API_KEY", raising=False)
+    with pytest.raises(Exception, match="SHELL_USER needs OPENBOT_API_KEY"):
+        Settings(_env_file=None)
+    monkeypatch.setenv("OPENBOT_API_KEY", "k")
+    assert Settings(_env_file=None).shell_user == "shell"
+
+
+def test_shell_user_empty_means_unset(monkeypatch):
+    monkeypatch.setenv("SHELL_USER", "")
+    monkeypatch.delenv("OPENBOT_API_KEY", raising=False)
+    assert Settings(_env_file=None).shell_user is None

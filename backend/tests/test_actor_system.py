@@ -1,5 +1,7 @@
 import asyncio
 
+from langchain_core.messages import AIMessage, AIMessageChunk
+from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from sqlalchemy import select
 
 from openbot.db.models import Actor, InboxItem, Message, Run
@@ -140,6 +142,65 @@ async def test_cancel_running(settings):
     await services.actors.wait_idle()
     assert (await runs(services))[0].status == "cancelled"
     assert [i.status for i in await items(services, "message") if i.run_id == run.id] == ["cancelled"]
+    await services.actors.stop()
+
+
+class StreamThenStall(ScriptedChatModel):
+    """Streams its chunks, then hangs like a model cut off mid-reply."""
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs) -> ChatResult:
+        return ChatResult(generations=[ChatGeneration(message=AIMessage(content="title"))])
+
+    async def _astream(self, messages, stop=None, run_manager=None, **kwargs):
+        for text in self.messages:
+            yield ChatGenerationChunk(message=AIMessageChunk(content=text))
+        await asyncio.sleep(3600)
+
+
+async def cancel_mid_stream(services, t, chunks):
+    services.model_factory = lambda actor: StreamThenStall(messages=chunks)
+    async with services.bus.subscribe(t.id) as q:
+        await post(services, t, "@eng go")
+        streamed = ""
+        while streamed != "".join(chunks):
+            ev = await asyncio.wait_for(q.get(), 5)
+            if ev["event"] == "run.event" and ev["data"].get("type") == "text_delta":
+                streamed += ev["data"]["payload"]["delta"]
+
+    async def running():
+        return next((r for r in await runs(services) if r.status == "running"), None)
+
+    run = await until(running, timeout=2.0)
+    assert await services.actors.cancel_run(run.id) is True
+    await services.actors.wait_idle()
+    return run
+
+
+async def bot_messages(services, run_id):
+    async with services.session_factory() as s:
+        return (await s.execute(select(Message).where(Message.run_id == run_id))).scalars().all()
+
+
+async def test_cancel_keeps_the_partial_reply_without_delivering_it(settings):
+    services, t = await setup(settings, {}, handles=("eng", "qa"))
+    run = await cancel_mid_stream(services, t, ["half a reply, ", "@qa please "])
+    [kept] = await bot_messages(services, run.id)
+    assert kept.content == "half a reply, @qa please " and kept.meta == {"interrupted": True} and kept.mentions == []
+    async with services.session_factory() as s:
+        qa = (await s.execute(select(Actor).where(Actor.handle == "qa"))).scalar_one()
+    assert [i for i in await items(services) if i.actor_id == qa.id] == []
+    async with services.session_factory() as s:
+        texts = [m.content for m in (await s.execute(select(Message).where(Message.thread_id == t.id)
+                                                     .order_by(Message.created_at))).scalars()]
+    assert texts[-2:] == ["half a reply, @qa please ", "@eng run was cancelled."]
+    assert (await runs(services))[0].status == "cancelled"
+    await services.actors.stop()
+
+
+async def test_cancel_before_any_output_posts_nothing_for_the_bot(settings):
+    services, t = await setup(settings, {})
+    run = await cancel_mid_stream(services, t, [])
+    assert await bot_messages(services, run.id) == []
     await services.actors.stop()
 
 
@@ -306,3 +367,18 @@ async def test_restart_recovery_drops_checkpoints_of_failed_runs(settings):
         assert (await s.get(Run, run_id)).status == "failed"
     assert await _checkpoint(services, run_id) is None
     await services.actors.stop()
+
+
+async def test_cancel_after_the_reply_was_posted_does_not_post_it_again(settings):
+    from openbot.runtime.runner import RunProgress
+
+    services, t = await setup(settings, {})
+    await services.actors.stop()
+    async with services.session_factory() as s:
+        eng = (await s.execute(select(Actor).where(Actor.handle == "eng"))).scalar_one()
+        run = Run(actor_id=eng.id, thread_id=t.id, status="running")
+        s.add(run)
+        await s.commit()
+        await post_message(services, s, thread_id=t.id, sender=eng, content="the whole reply", run_id=run.id)
+    await services.runner._post_interrupted(eng, t, run, 1, RunProgress(reply="the whole reply"))
+    assert [m.content for m in await bot_messages(services, run.id)] == ["the whole reply"]

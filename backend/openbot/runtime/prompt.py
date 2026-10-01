@@ -61,7 +61,9 @@ def build_history(messages: list[Message], actor_id: str, *, token_budget: int, 
     out: list[BaseMessage] = []
     for m in picked:
         if m.sender_kind == "bot" and m.sender_actor_id == actor_id:
-            out.append(AIMessage(content=m.content))
+            # Otherwise the model takes its cut-off reply for a finished one.
+            interrupted = (getattr(m, "meta", None) or {}).get("interrupted")
+            out.append(AIMessage(content=f"{m.content}\n\n[interrupted by the user]".lstrip() if interrupted else m.content))
             continue
         tag = ""
         if m.id in trigger_ids:

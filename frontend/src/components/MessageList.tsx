@@ -40,6 +40,7 @@ export default function MessageList({ state, participants, onRunLoaded, iconByAc
             <span className="font-medium text-fg">{m.sender_name}</span>
             <time className="text-faint" dateTime={m.created_at} title={parseTs(m.created_at).toLocaleString()}>{clock(m.created_at)}</time>
             {m.hop > 0 && <span className="text-faint">hop {m.hop}</span>}
+            {m.metadata?.interrupted === true && <span className="text-warn" title="The run was stopped before this reply was finished">interrupted</span>}
           </div>
           <MarkdownContent content={m.content} />
           {messageImages(m).length > 0 && <div className="mt-2 flex flex-wrap gap-2">{messageImages(m).map((a, i) => <figure key={`${m.id}:${i}`} className="m-0"><img src={a.url} alt={`image attached to message by ${m.sender_name}`} className="max-h-40 rounded-ui border border-line" />{a.name && <figcaption className="mt-0.5 max-w-40 truncate text-[11px] text-faint">{a.name}</figcaption>}</figure>)}</div>}
