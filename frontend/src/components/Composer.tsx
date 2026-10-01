@@ -4,7 +4,7 @@ import type { AttachmentIn } from "../api/client";
 import { Button, Kbd } from "./ui";
 import { CloseIcon } from "./icons";
 import { modKey } from "../lib/shortcuts";
-import { clearThreadDraft, getThreadDraft, setThreadDraft } from "../lib/threadDrafts";
+import { beginThreadSend, endThreadSend, getThreadDraft, onThreadSendFailed, setThreadDraft } from "../lib/threadDrafts";
 
 // Paste constraints for attached images (client-side guard; the API re-validates).
 const MAX_IMAGES = 4;
@@ -64,6 +64,10 @@ export default function Composer({ threadId, handles, onSend, disabled, hint, au
   const [skipped, setSkipped] = useState(false);
   const [dropped, setDropped] = useState(false);
   const ref = useRef<HTMLTextAreaElement>(null);
+  const edit = (value: string) => { setText(value); setThreadDraft(threadId, value); };
+  // A send started before this composer was mounted (the reader left the thread and came back) has
+  // failed: its text is still the stored draft, show it again.
+  useEffect(() => onThreadSendFailed(threadId, setText), [threadId]);
   // Auto-focus the textarea on mount when requested (e.g. new thread).
   useEffect(() => { if (autoFocus && ref.current) ref.current.focus(); }, [autoFocus]);
   const [dismissedAt, setDismissedAt] = useState<number | null>(null);
@@ -72,8 +76,7 @@ export default function Composer({ threadId, handles, onSend, disabled, hint, au
   const pick = (h: string) => {
     if (!q) return;
     const r = applyMention(text, q.start, caret, h);
-    setText(r.text);
-    setThreadDraft(threadId, r.text);
+    edit(r.text);
     setCaret(r.caret);
     setSel(0);
     requestAnimationFrame(() => { ref.current?.focus(); ref.current?.setSelectionRange(r.caret, r.caret); });
@@ -87,25 +90,33 @@ export default function Composer({ threadId, handles, onSend, disabled, hint, au
   };
   // Clear only once the send succeeds: a failed post keeps the draft and its images to
   // retry, and the rejection stops here rather than escaping as an unhandled promise.
+  // And clear only what was sent: the field stays editable while the post is pending.
   const send = async () => {
     const t = text.trim();
     if ((!t && attachments.length === 0) || sending) return;
+    const sentAttachments = attachments;
     setSending(true);
+    const rev = beginThreadSend(threadId);
+    let ok = false;
     try {
       await onSend(t, attachments);
-      setText("");
-      clearThreadDraft(threadId);
-      setCaret(0);
-      setSel(0);
-      setDismissedAt(null);
-      setAttachments([]);
-      setSkipped(false);
-      setDropped(false);
+      ok = true;
     } catch {
       /* the caller renders the error; keep the draft */
-    } finally {
-      setSending(false);
     }
+    const untouched = endThreadSend(threadId, rev, ok);
+    if (ok) {
+      if (untouched) {
+        setText("");
+        setCaret(0);
+        setSel(0);
+        setDismissedAt(null);
+      }
+      setAttachments((imgs) => imgs.filter((a) => !sentAttachments.includes(a)));
+      setSkipped(false);
+      setDropped(false);
+    }
+    setSending(false);
   };
   const canSend = !disabled && !sending && (!!text.trim() || attachments.length > 0);
   return (
@@ -155,7 +166,7 @@ export default function Composer({ threadId, handles, onSend, disabled, hint, au
             placeholder={hint ?? "Type a message. @handle addresses a bot."}
             className="min-h-[4.25rem] flex-1 resize-none bg-transparent text-[13.5px] leading-relaxed text-fg outline-none placeholder:text-faint disabled:cursor-not-allowed"
             onChange={(e) => {
-              setText(e.target.value); setThreadDraft(threadId, e.target.value); setCaret(e.target.selectionStart); setSel(0);
+              edit(e.target.value); setCaret(e.target.selectionStart); setSel(0);
               setDismissedAt((d) => (mentionQuery(e.target.value, e.target.selectionStart)?.start === d ? d : null));
             }}
             onSelect={(e) => setCaret((e.target as HTMLTextAreaElement).selectionStart)}
